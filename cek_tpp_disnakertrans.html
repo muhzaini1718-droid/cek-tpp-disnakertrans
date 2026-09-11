@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cek TPP — Disnakertrans</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+
+<!-- Firebase (gratis, dari Google) -->
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<!-- SheetJS, untuk membaca file Excel/CSV yang diupload admin -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<style>
+  :root{
+    --navy:#152238; --navy-2:#1e304d; --gold:#b9922f;
+    --paper:#f6f4ee; --paper-2:#efece2; --ink:#1c1c1c;
+    --slate:#5c6a7d; --line:#d8d2c2; --green:#2f6e51; --red:#a3402f;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans', system-ui, sans-serif;
+    min-height:100vh; display:flex; flex-direction:column; align-items:center;}
+  header{width:100%; background:var(--navy); color:var(--paper); padding:22px 20px 20px; text-align:center; border-bottom:3px solid var(--gold);}
+  header .eyebrow{font-size:12.5px; letter-spacing:.03em; color:#b7c3d6; margin-bottom:4px;}
+  header h1{font-family:'Source Serif 4', serif; font-weight:600; font-size:22px; margin:0; letter-spacing:.01em;}
+  header .sub{font-size:13px; color:#9fb0c6; margin-top:5px;}
+  main{width:100%; max-width:480px; padding:28px 18px 60px; flex:1;}
+
+  .card{background:#fff; border:1px solid var(--line); border-radius:2px; padding:30px 26px 26px; box-shadow:0 1px 0 var(--line);}
+  .card h2{font-family:'Source Serif 4', serif; font-size:18px; font-weight:600; margin:0 0 6px; color:var(--navy);}
+  .card p.desc{font-size:13.5px; color:var(--slate); line-height:1.5; margin:0 0 22px;}
+  label{display:block; font-size:12.5px; color:var(--slate); margin-bottom:6px; font-weight:500;}
+  .field{margin-bottom:18px;}
+  input[type=text], input[type=date], input[type=email], input[type=password], input[type=file]{
+    width:100%; padding:11px 12px; border:1px solid #c7c1ae; border-radius:2px;
+    font-size:14.5px; font-family:'IBM Plex Mono', monospace; background:var(--paper-2); color:var(--ink);
+  }
+  input:focus{outline:2px solid var(--gold); outline-offset:1px; background:#fff;}
+  button{width:100%; padding:12px; background:var(--navy); color:#fff; border:none; border-radius:2px;
+    font-size:14.5px; font-weight:500; font-family:'IBM Plex Sans', sans-serif; cursor:pointer; transition:background .15s ease;}
+  button:hover{background:var(--navy-2);}
+  button.secondary{background:transparent; color:var(--slate); border:1px solid var(--line);}
+  button.secondary:hover{background:var(--paper-2);}
+  button:disabled{opacity:.5; cursor:not-allowed;}
+  .error-msg{background:#fbeae6; border:1px solid #e3b6a8; color:var(--red); font-size:13px; padding:10px 12px; border-radius:2px; margin-bottom:16px; line-height:1.5; display:none;}
+  .ok-msg{background:#e9f3ee; border:1px solid #a9d1bb; color:var(--green); font-size:13px; padding:10px 12px; border-radius:2px; margin-bottom:16px; line-height:1.5; display:none;}
+  .hint{font-size:12px; color:var(--slate); margin-top:8px; line-height:1.5;}
+  .note-box{margin-top:22px; padding:14px 16px; background:var(--paper-2); border-left:3px solid var(--gold); font-size:12.5px; color:var(--slate); line-height:1.55;}
+  .link-row{text-align:center; margin-top:18px;}
+  .link-row a{font-size:12.5px; color:var(--slate); text-decoration:underline; cursor:pointer;}
+  .loading{text-align:center; padding:40px 0; color:var(--slate); font-size:13.5px;}
+
+  /* Slip pegawai */
+  .slip{display:none; background:#fff; border:1px solid var(--line);}
+  .slip-head{background:var(--navy); color:#fff; padding:20px 22px 16px; border-bottom:3px solid var(--gold);}
+  .slip-head .label{font-size:11.5px; color:#9fb0c6; margin-bottom:3px;}
+  .slip-head .nama{font-family:'Source Serif 4', serif; font-size:19px; font-weight:600;}
+  .slip-head .jabatan{font-size:13.5px; color:#cdd8e6; margin-top:3px;}
+  .slip-body{padding:20px 22px 8px;}
+  .meta-row{display:flex; justify-content:space-between; font-size:12.5px; color:var(--slate); padding:9px 0; border-bottom:1px solid var(--line);}
+  .meta-row span:last-child{font-family:'IBM Plex Mono', monospace; color:var(--ink);}
+  .komponen{margin-top:18px;}
+  .komponen-title{font-size:12px; color:var(--slate); margin-bottom:10px; font-weight:500;}
+  .komp-row{display:flex; justify-content:space-between; align-items:baseline; padding:8px 0; font-size:14px;}
+  .komp-row.zero .k-label, .komp-row.zero .k-val{color:#b3ab99;}
+  .komp-row .k-val{font-family:'IBM Plex Mono', monospace; font-size:14px;}
+  .total-row{margin-top:14px; padding:16px 22px; background:var(--paper-2); display:flex; justify-content:space-between; align-items:center; border-top:2px solid var(--navy);}
+  .total-row .t-label{font-family:'Source Serif 4', serif; font-size:14px; color:var(--navy);}
+  .total-row .t-val{font-family:'IBM Plex Mono', monospace; font-size:19px; font-weight:600; color:var(--navy);}
+  .slip-footer{padding:16px 22px 20px;}
+  .periode{text-align:center; font-size:12px; color:var(--slate); padding:10px 0 0;}
+
+  /* Admin */
+  .admin-tag{display:inline-block; font-size:11px; background:var(--gold); color:#3a2c05; padding:3px 8px; border-radius:2px; margin-bottom:14px; font-weight:600; letter-spacing:.02em;}
+  table.preview{width:100%; border-collapse:collapse; margin:14px 0; font-size:12.5px;}
+  table.preview th, table.preview td{padding:7px 8px; border-bottom:1px solid var(--line); text-align:left;}
+  table.preview th{color:var(--slate); font-weight:500; font-size:11.5px;}
+  table.preview td.num{font-family:'IBM Plex Mono', monospace; text-align:right;}
+  .preview-wrap{max-height:260px; overflow-y:auto; border:1px solid var(--line); padding:0 10px;}
+  .btn-row{display:flex; gap:10px; margin-top:16px;}
+  .btn-row button{flex:1;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="eyebrow">Dinas Ketenagakerjaan dan Transmigrasi</div>
+  <h1>Cek Tambahan Penghasilan Pegawai</h1>
+  <div class="sub" id="headerSub">Kabupaten Kotabaru</div>
+</header>
+
+<main>
+
+  <div class="loading" id="loadingBox">Memuat data…</div>
+
+  <!-- ===== EMPLOYEE LOGIN ===== -->
+  <div class="card" id="loginCard" style="display:none;">
+    <h2>Masuk untuk melihat TPP Anda</h2>
+    <p class="desc">Masukkan NIP dan tanggal lahir Anda. Sistem hanya akan menampilkan rincian TPP milik Anda sendiri.</p>
+    <div class="error-msg" id="errMsg"></div>
+    <div class="field">
+      <label for="nipInput">NIP (18 digit)</label>
+      <input type="text" id="nipInput" inputmode="numeric" maxlength="18" placeholder="contoh: 198103072010011009">
+    </div>
+    <div class="field">
+      <label for="tglInput">Tanggal Lahir</label>
+      <input type="date" id="tglInput">
+      <div class="hint">Tanggal lahir digunakan sebagai verifikasi, sesuai 8 digit pertama NIP Anda.</div>
+    </div>
+    <button onclick="doLogin()">Lihat TPP Saya</button>
+    <div class="note-box" id="periodeNote">Data periode —</div>
+    <div class="link-row"><a onclick="showAdminLogin()">Login sebagai Admin</a></div>
+  </div>
+
+  <!-- ===== DATA NOT AVAILABLE ===== -->
+  <div class="card" id="noDataCard" style="display:none;">
+    <h2>Data belum tersedia</h2>
+    <p class="desc">Admin belum mengunggah data TPP untuk periode ini. Silakan hubungi bagian kepegawaian.</p>
+    <div class="link-row"><a onclick="showAdminLogin()">Login sebagai Admin</a></div>
+  </div>
+
+  <!-- ===== EMPLOYEE SLIP ===== -->
+  <div class="slip" id="slipCard">
+    <div class="slip-head">
+      <div class="label" id="slipPeriode">Rincian TPP</div>
+      <div class="nama" id="oNama"></div>
+      <div class="jabatan" id="oJabatan"></div>
+    </div>
+    <div class="slip-body">
+      <div class="meta-row"><span>NIP</span><span id="oNip"></span></div>
+      <div class="meta-row"><span>Kelas Jabatan</span><span id="oKelas"></span></div>
+      <div class="komponen">
+        <div class="komponen-title">Komponen Pembayaran</div>
+        <div class="komp-row"><span class="k-label">Prestasi Kerja</span><span class="k-val" id="oPrestasi"></span></div>
+        <div class="komp-row"><span class="k-label">Beban Kerja</span><span class="k-val" id="oBeban"></span></div>
+        <div class="komp-row zero"><span class="k-label">Tempat Bertugas</span><span class="k-val" id="oTempat"></span></div>
+        <div class="komp-row zero"><span class="k-label">Kondisi Kerja</span><span class="k-val" id="oKondisi"></span></div>
+        <div class="komp-row zero"><span class="k-label">Kelangkaan Profesi</span><span class="k-val" id="oLangka"></span></div>
+        <div class="komp-row zero"><span class="k-label">Pertimbangan Objektif Lainnya</span><span class="k-val" id="oLain"></span></div>
+      </div>
+    </div>
+    <div class="total-row"><span class="t-label">Jumlah TPP</span><span class="t-val" id="oJumlah"></span></div>
+    <div class="slip-footer">
+      <button class="secondary" onclick="doLogout()">Keluar</button>
+      <div class="periode">Kepala Dinas Ketenagakerjaan dan Transmigrasi</div>
+    </div>
+  </div>
+
+  <!-- ===== ADMIN LOGIN ===== -->
+  <div class="card" id="adminLoginCard" style="display:none;">
+    <span class="admin-tag">MODE ADMIN</span>
+    <h2>Masuk sebagai Admin</h2>
+    <p class="desc">Gunakan email &amp; kata sandi admin yang dibuat di Firebase Authentication.</p>
+    <div class="error-msg" id="adminErrMsg"></div>
+    <div class="field"><label for="adminEmail">Email</label><input type="email" id="adminEmail"></div>
+    <div class="field"><label for="adminPass">Kata Sandi</label><input type="password" id="adminPass"></div>
+    <button onclick="doAdminLogin()">Masuk</button>
+    <div class="link-row"><a onclick="showEmployeeLogin()">← Kembali ke halaman pegawai</a></div>
+  </div>
+
+  <!-- ===== ADMIN PANEL ===== -->
+  <div class="card" id="adminPanel" style="display:none;">
+    <span class="admin-tag">MODE ADMIN</span>
+    <h2>Unggah Data TPP Bulanan</h2>
+    <p class="desc">Unggah file Excel/CSV sesuai format template. Data akan langsung menggantikan data yang tampil untuk semua pegawai.</p>
+    <div class="error-msg" id="uploadErrMsg"></div>
+    <div class="ok-msg" id="uploadOkMsg"></div>
+
+    <div class="field">
+      <label for="periodeInput">Periode (contoh: September 2026)</label>
+      <input type="text" id="periodeInput" placeholder="September 2026">
+    </div>
+    <div class="field">
+      <label for="fileInput">File Excel/CSV TPP</label>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
+      <div class="hint">Kolom yang wajib ada: Nama, NIP, Jabatan, Kelas, Prestasi, Beban, Tempat, Kondisi, Kelangkaan, Lain. Jumlah dihitung otomatis.</div>
+    </div>
+    <button onclick="prosesFile()">Proses &amp; Pratinjau</button>
+
+    <div id="previewWrap" style="display:none;">
+      <div class="preview-wrap">
+        <table class="preview" id="previewTable"></table>
+      </div>
+      <div class="hint" id="previewSummary"></div>
+      <div class="btn-row">
+        <button class="secondary" onclick="batalPreview()">Batal</button>
+        <button onclick="publikasikan()">Simpan &amp; Publikasikan</button>
+      </div>
+    </div>
+
+    <div class="link-row" style="margin-top:20px;"><a onclick="doAdminLogout()">Keluar dari mode admin</a></div>
+  </div>
+
+</main>
+
+<script>
+/* =======================================================
+   GANTI BAGIAN INI dengan Firebase Config dari project Anda
+   (Firebase Console > Project settings > Your apps > SDK setup)
+   ======================================================= */
+const firebaseConfig = {
+  apiKey: "AIzaSyDb-RSBHTdNOH9k-Fa86AFiQ1777pBD_XA",
+  authDomain: "app-tpp-disnakertrans.firebaseapp.com",
+  projectId: "app-tpp-disnakertrans",
+  storageBucket: "app-tpp-disnakertrans.firebasestorage.app",
+  messagingSenderId: "107230672547",
+  appId: "1:107230672547:web:064b988639473f83e77116"
+};
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+let currentEmployees = [];
+let parsedPreview = null;
+
+function formatRupiah(n){
+  n = Number(n) || 0;
+  return "Rp " + n.toLocaleString('id-ID');
+}
+
+function showOnly(id){
+  ['loadingBox','loginCard','noDataCard','slipCard','adminLoginCard','adminPanel'].forEach(x=>{
+    document.getElementById(x).style.display = (x===id) ? 'block' : 'none';
+  });
+}
+
+/* ---------- Load data untuk pegawai ---------- */
+async function loadData(){
+  showOnly('loadingBox');
+  try{
+    const doc = await db.collection('tpp').doc('current').get();
+    if(doc.exists && doc.data().employees && doc.data().employees.length){
+      const data = doc.data();
+      currentEmployees = data.employees;
+      document.getElementById('periodeNote').textContent = "Data periode " + (data.periode || "-") + ". Aplikasi ini terhubung ke database aman — hanya rincian TPP Anda sendiri yang ditampilkan.";
+      document.getElementById('slipPeriode').textContent = "Rincian TPP — " + (data.periode || "-");
+      showOnly('loginCard');
+    } else {
+      showOnly('noDataCard');
+    }
+  }catch(e){
+    console.error(e);
+    showOnly('noDataCard');
+  }
+}
+
+/* ---------- Login pegawai ---------- */
+function doLogin(){
+  const nip = document.getElementById('nipInput').value.trim();
+  const tgl = document.getElementById('tglInput').value;
+  const errBox = document.getElementById('errMsg');
+  errBox.style.display = 'none';
+
+  if(!nip || !tgl){ errBox.textContent = "Mohon isi NIP dan tanggal lahir."; errBox.style.display='block'; return; }
+
+  const p = currentEmployees.find(x => String(x.nip).trim() === nip);
+  if(!p){ errBox.textContent = "NIP tidak ditemukan dalam data TPP periode ini."; errBox.style.display='block'; return; }
+
+  const nipBirth = String(p.nip).trim().substring(0,8);
+  const inputBirth = tgl.replace(/-/g,'');
+  if(nipBirth !== inputBirth){ errBox.textContent = "Tanggal lahir tidak sesuai dengan NIP. Periksa kembali."; errBox.style.display='block'; return; }
+
+  document.getElementById('oNama').textContent = p.nama;
+  document.getElementById('oJabatan').textContent = p.jabatan;
+  document.getElementById('oNip').textContent = p.nip;
+  document.getElementById('oKelas').textContent = p.kelas;
+  document.getElementById('oPrestasi').textContent = formatRupiah(p.prestasi);
+  document.getElementById('oBeban').textContent = formatRupiah(p.beban);
+  document.getElementById('oTempat').textContent = formatRupiah(p.tempat);
+  document.getElementById('oKondisi').textContent = formatRupiah(p.kondisi);
+  document.getElementById('oLangka').textContent = formatRupiah(p.langka);
+  document.getElementById('oLain').textContent = formatRupiah(p.lain);
+  document.getElementById('oJumlah').textContent = formatRupiah(p.jumlah);
+  showOnly('slipCard');
+}
+
+function doLogout(){
+  document.getElementById('nipInput').value='';
+  document.getElementById('tglInput').value='';
+  document.getElementById('errMsg').style.display='none';
+  showOnly('loginCard');
+}
+
+/* ---------- Admin ---------- */
+function showAdminLogin(){ showOnly('adminLoginCard'); }
+function showEmployeeLogin(){ showOnly('loginCard'); }
+
+function doAdminLogin(){
+  const email = document.getElementById('adminEmail').value.trim();
+  const pass = document.getElementById('adminPass').value;
+  const err = document.getElementById('adminErrMsg');
+  err.style.display='none';
+  auth.signInWithEmailAndPassword(email, pass)
+    .then(()=>{ showOnly('adminPanel'); })
+    .catch((e)=>{ err.textContent = "Login gagal: email atau kata sandi salah."; err.style.display='block'; });
+}
+
+function doAdminLogout(){
+  auth.signOut().then(loadData);
+}
+
+/* ---------- Proses file upload ---------- */
+function prosesFile(){
+  const errBox = document.getElementById('uploadErrMsg');
+  const okBox = document.getElementById('uploadOkMsg');
+  errBox.style.display='none'; okBox.style.display='none';
+
+  const periode = document.getElementById('periodeInput').value.trim();
+  const fileEl = document.getElementById('fileInput');
+  if(!periode){ errBox.textContent="Isi periode terlebih dahulu (contoh: September 2026)."; errBox.style.display='block'; return; }
+  if(!fileEl.files.length){ errBox.textContent="Pilih file Excel/CSV terlebih dahulu."; errBox.style.display='block'; return; }
+
+  const reader = new FileReader();
+  reader.onload = function(e){
+    try{
+      const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, {defval:0});
+
+      const employees = rows.map(r=>{
+        const get = (key)=>{
+          const k = Object.keys(r).find(x=>x.trim().toLowerCase()===key);
+          return r[k];
+        };
+        const prestasi = Number(get('prestasi'))||0;
+        const beban = Number(get('beban'))||0;
+        const tempat = Number(get('tempat'))||0;
+        const kondisi = Number(get('kondisi'))||0;
+        const langka = Number(get('kelangkaan'))||0;
+        const lain = Number(get('lain'))||0;
+        return {
+          nama: String(get('nama')||'').trim(),
+          nip: String(get('nip')||'').trim(),
+          jabatan: String(get('jabatan')||'').trim(),
+          kelas: get('kelas')||'',
+          prestasi, beban, tempat, kondisi, langka, lain,
+          jumlah: prestasi+beban+tempat+kondisi+langka+lain
+        };
+      }).filter(x=>x.nip);
+
+      if(!employees.length){ errBox.textContent="Tidak ada baris data yang valid. Periksa nama kolom di file Anda."; errBox.style.display='block'; return; }
+
+      parsedPreview = {periode, employees};
+      tampilkanPreview(employees);
+    }catch(err){
+      console.error(err);
+      errBox.textContent="Gagal membaca file. Pastikan formatnya .xlsx atau .csv sesuai template.";
+      errBox.style.display='block';
+    }
+  };
+  reader.readAsArrayBuffer(fileEl.files[0]);
+}
+
+function tampilkanPreview(employees){
+  const table = document.getElementById('previewTable');
+  let html = '<tr><th>Nama</th><th>NIP</th><th style="text-align:right;">Jumlah TPP</th></tr>';
+  let total = 0;
+  employees.forEach(e=>{ total += e.jumlah; html += `<tr><td>${e.nama}</td><td>${e.nip}</td><td class="num">${formatRupiah(e.jumlah)}</td></tr>`; });
+  table.innerHTML = html;
+  document.getElementById('previewSummary').textContent = `${employees.length} pegawai ditemukan · Total TPP: ${formatRupiah(total)}`;
+  document.getElementById('previewWrap').style.display = 'block';
+}
+
+function batalPreview(){
+  parsedPreview = null;
+  document.getElementById('previewWrap').style.display='none';
+}
+
+function publikasikan(){
+  if(!parsedPreview) return;
+  const okBox = document.getElementById('uploadOkMsg');
+  const errBox = document.getElementById('uploadErrMsg');
+  db.collection('tpp').doc('current').set({
+    periode: parsedPreview.periode,
+    employees: parsedPreview.employees,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).then(()=>{
+    okBox.textContent = "Berhasil dipublikasikan. Semua pegawai kini melihat data periode " + parsedPreview.periode + ".";
+    okBox.style.display='block';
+    document.getElementById('previewWrap').style.display='none';
+    document.getElementById('fileInput').value='';
+    parsedPreview = null;
+  }).catch(e=>{
+    console.error(e);
+    errBox.textContent = "Gagal menyimpan ke database. Periksa koneksi internet Anda.";
+    errBox.style.display='block';
+  });
+}
+
+loadData();
+</script>
+
+</body>
+</html>
