@@ -13,6 +13,8 @@
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <!-- SheetJS, untuk membaca file Excel/CSV yang diupload admin -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- PDF.js untuk membaca tabel PDF langsung di browser admin -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
 <style>
   :root{
@@ -166,7 +168,7 @@
   <div class="card" id="adminPanel" style="display:none;">
     <span class="admin-tag">MODE ADMIN</span>
     <h2>Unggah Data TPP Bulanan</h2>
-    <p class="desc">Unggah file Excel/CSV sesuai format template. Data akan langsung menggantikan data yang tampil untuk semua pegawai.</p>
+    <p class="desc">Unggah Excel/CSV atau PDF laporan TPP. Untuk PDF, sistem membaca tabel langsung di browser lalu menampilkan pratinjau sebelum dipublikasikan.</p>
     <div class="error-msg" id="uploadErrMsg"></div>
     <div class="ok-msg" id="uploadOkMsg"></div>
 
@@ -175,9 +177,9 @@
       <input type="text" id="periodeInput" placeholder="September 2026">
     </div>
     <div class="field">
-      <label for="fileInput">File Excel/CSV TPP</label>
-      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
-      <div class="hint">Kolom yang wajib ada: Nama, NIP, Jabatan, Kelas, Prestasi, Beban, Tempat, Kondisi, Kelangkaan, Lain. Jumlah dihitung otomatis.</div>
+      <label for="fileInput">File TPP (Excel / CSV / PDF)</label>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv,.pdf,application/pdf">
+      <div class="hint">PDF mengikuti format Laporan Perhitungan TPP Disnakertrans. Sistem akan membaca Nama, NIP, Jabatan, Kelas Jabatan, seluruh komponen pembayaran, lalu menghitung dan memvalidasi Jumlah TPP.</div>
     </div>
     <button onclick="prosesFile()">Proses &amp; Pratinjau</button>
 
@@ -400,55 +402,231 @@ function doAdminLogout(){
 }
 
 /* ---------- Proses file upload ---------- */
-function prosesFile(){
+function setUploadMessage(type, text){
   const errBox = document.getElementById('uploadErrMsg');
   const okBox = document.getElementById('uploadOkMsg');
-  errBox.style.display='none'; okBox.style.display='none';
+  errBox.style.display='none';
+  okBox.style.display='none';
+  if(type==='error'){
+    errBox.textContent=text;
+    errBox.style.display='block';
+  }else if(type==='ok'){
+    okBox.textContent=text;
+    okBox.style.display='block';
+  }
+}
 
-  const periode = document.getElementById('periodeInput').value.trim();
-  const fileEl = document.getElementById('fileInput');
-  if(!periode){ errBox.textContent="Isi periode terlebih dahulu (contoh: September 2026)."; errBox.style.display='block'; return; }
-  if(!fileEl.files.length){ errBox.textContent="Pilih file Excel/CSV terlebih dahulu."; errBox.style.display='block'; return; }
+function parseMoneyToken(value){
+  const s = String(value ?? '').trim();
+  if(!s || s === '-') return 0;
+  const digits = s.replace(/[^0-9]/g,'');
+  return digits ? Number(digits) : 0;
+}
 
-  const reader = new FileReader();
-  reader.onload = function(e){
-    try{
-      const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, {defval:'', raw:false});
+function extractFirstMoney(items, xMin, xMax){
+  const candidates = items
+    .filter(it => it.x >= xMin && it.x < xMax)
+    .map(it => String(it.text || '').trim())
+    .filter(t => /^(?:\d{1,3}(?:\.\d{3})+|\d+|-)$/.test(t));
+  if(!candidates.length) return 0;
+  // Pada header PDF ada kata "Kerja" di zona Prestasi/Beban; hanya token angka yang dipakai.
+  return parseMoneyToken(candidates[candidates.length - 1]);
+}
 
-      const employees = rows.map(r=>{
-        const get = (key)=>{
-          const k = Object.keys(r).find(x=>x.trim().toLowerCase()===key);
-          return r[k];
-        };
-        const prestasi = Number(get('prestasi'))||0;
-        const beban = Number(get('beban'))||0;
-        const tempat = Number(get('tempat'))||0;
-        const kondisi = Number(get('kondisi'))||0;
-        const langka = Number(get('kelangkaan'))||0;
-        const lain = Number(get('lain'))||0;
-        return {
-          nama: String(get('nama')||'').trim(),
-          nip: normalizeNip(get('nip')),
-          jabatan: String(get('jabatan')||'').trim(),
-          kelas: get('kelas')||'',
-          prestasi, beban, tempat, kondisi, langka, lain,
-          jumlah: prestasi+beban+tempat+kondisi+langka+lain
-        };
-      }).filter(x=>x.nip);
+function extractColumnText(items, xMin, xMax){
+  return items
+    .filter(it => it.x >= xMin && it.x < xMax)
+    .sort((a,b) => (a.y-b.y) || (a.x-b.x))
+    .map(it => String(it.text || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
 
-      if(!employees.length){ errBox.textContent="Tidak ada baris data yang valid. Periksa nama kolom di file Anda."; errBox.style.display='block'; return; }
-
-      parsedPreview = {periode, employees};
-      tampilkanPreview(employees);
-    }catch(err){
-      console.error(err);
-      errBox.textContent="Gagal membaca file. Pastikan formatnya .xlsx atau .csv sesuai template.";
-      errBox.style.display='block';
-    }
+function extractPeriodFromPdf(items){
+  const text = items.slice().sort((a,b)=>(a.y-b.y)||(a.x-b.x)).map(it=>it.text).join(' ');
+  const m = text.match(/BULAN\s+([A-Z]+)\s+(20\d{2})/i);
+  if(!m) return '';
+  const months = {
+    JANUARI:'Januari', FEBRUARI:'Februari', MARET:'Maret', APRIL:'April', MEI:'Mei', JUNI:'Juni',
+    JULI:'Juli', AGUSTUS:'Agustus', SEPTEMBER:'September', OKTOBER:'Oktober', NOVEMBER:'November', DESEMBER:'Desember'
   };
-  reader.readAsArrayBuffer(fileEl.files[0]);
+  return `${months[m[1].toUpperCase()] || m[1]} ${m[2]}`;
+}
+
+async function extractPdfPageItems(page){
+  const content = await page.getTextContent({normalizeWhitespace:true, disableCombineTextItems:false});
+  return content.items.map(it => ({
+    text: String(it.str || '').trim(),
+    x: Number(it.transform?.[4] || 0),
+    y: Number(it.transform?.[5] || 0)
+  })).filter(it=>it.text);
+}
+
+async function parseTppPdf(file){
+  if(typeof pdfjsLib === 'undefined') throw new Error('PDF_ENGINE_UNAVAILABLE');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  const buffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data:buffer}).promise;
+  const allEmployees = [];
+  let detectedPeriod = '';
+
+  // Format laporan TPP menggunakan posisi kolom yang konsisten. NIP menjadi jangkar setiap baris.
+  const Z = {
+    no:[25,52], nama:[50,145], nip:[140,235], jabatan:[232,385], kelas:[380,422],
+    prestasi:[420,475], beban:[475,530], tempat:[530,575], kondisi:[575,620],
+    langka:[620,680], lain:[680,755], jumlah:[755,815]
+  };
+
+  for(let pageNo=1; pageNo<=pdf.numPages; pageNo++){
+    const page = await pdf.getPage(pageNo);
+    const items = await extractPdfPageItems(page);
+    if(!detectedPeriod) detectedPeriod = extractPeriodFromPdf(items);
+
+    const nipAnchors = items
+      .filter(it => it.x >= Z.nip[0] && it.x < Z.nip[1] && /^\d{18}$/.test(it.text))
+      .sort((a,b)=>a.y-b.y);
+
+    if(!nipAnchors.length) continue;
+
+    for(let i=0;i<nipAnchors.length;i++){
+      const anchor = nipAnchors[i];
+      const prevY = i>0 ? nipAnchors[i-1].y : anchor.y-30;
+      const nextY = i<nipAnchors.length-1 ? nipAnchors[i+1].y : anchor.y+30;
+      const rowMin = (prevY + anchor.y) / 2;
+      const rowMax = (anchor.y + nextY) / 2;
+      const rowItems = items.filter(it => it.y >= rowMin && it.y < rowMax);
+
+      // NIP pada halaman tanda tangan tidak memiliki nomor urut pada kolom No; abaikan.
+      const noText = extractColumnText(rowItems, Z.no[0], Z.no[1]);
+      if(!/^\d{1,2}$/.test(noText)) continue;
+
+      const prestasi = extractFirstMoney(rowItems, ...Z.prestasi);
+      const beban = extractFirstMoney(rowItems, ...Z.beban);
+      const tempat = extractFirstMoney(rowItems, ...Z.tempat);
+      const kondisi = extractFirstMoney(rowItems, ...Z.kondisi);
+      const langka = extractFirstMoney(rowItems, ...Z.langka);
+      const lain = extractFirstMoney(rowItems, ...Z.lain);
+      const parsedJumlah = extractFirstMoney(rowItems, ...Z.jumlah);
+      const calculatedJumlah = prestasi + beban + tempat + kondisi + langka + lain;
+
+      const employee = {
+        no:Number(noText),
+        nama:extractColumnText(rowItems, ...Z.nama),
+        nip:normalizeNip(anchor.text),
+        jabatan:extractColumnText(rowItems, ...Z.jabatan),
+        kelas:extractColumnText(rowItems, ...Z.kelas),
+        prestasi, beban, tempat, kondisi, langka, lain,
+        jumlah:calculatedJumlah,
+        pdfJumlah:parsedJumlah
+      };
+
+      if(!employee.nama || !employee.jabatan || employee.nip.length!==18) continue;
+      if(employee.pdfJumlah && employee.pdfJumlah !== employee.jumlah){
+        throw new Error(`PDF_VALIDATION_MISMATCH:${employee.no}:${employee.nama}:${employee.pdfJumlah}:${employee.jumlah}`);
+      }
+      allEmployees.push(employee);
+    }
+  }
+
+  // Hindari duplikasi NIP jika PDF memiliki pengulangan halaman/teks.
+  const unique = [];
+  const seen = new Set();
+  for(const e of allEmployees){
+    if(seen.has(e.nip)) continue;
+    seen.add(e.nip);
+    delete e.no;
+    delete e.pdfJumlah;
+    unique.push(e);
+  }
+
+  if(!unique.length) throw new Error('PDF_NO_DATA');
+  unique.sort((a,b)=>a.nama.localeCompare(b.nama,'id'));
+  return {periode:detectedPeriod, employees:unique};
+}
+
+function prosesSpreadsheet(file, periode){
+  return new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onload = function(e){
+      try{
+        const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, {defval:'', raw:false});
+        const employees = rows.map(r=>{
+          const get = (key)=>{
+            const k = Object.keys(r).find(x=>x.trim().toLowerCase()===key);
+            return k===undefined ? '' : r[k];
+          };
+          const prestasi = parseMoneyToken(get('prestasi'));
+          const beban = parseMoneyToken(get('beban'));
+          const tempat = parseMoneyToken(get('tempat'));
+          const kondisi = parseMoneyToken(get('kondisi'));
+          const langka = parseMoneyToken(get('kelangkaan'));
+          const lain = parseMoneyToken(get('lain'));
+          return {
+            nama:String(get('nama')||'').trim(),
+            nip:normalizeNip(get('nip')),
+            jabatan:String(get('jabatan')||'').trim(),
+            kelas:String(get('kelas')||'').trim(),
+            prestasi,beban,tempat,kondisi,langka,lain,
+            jumlah:prestasi+beban+tempat+kondisi+langka+lain
+          };
+        }).filter(x=>x.nip);
+        if(!employees.length) return reject(new Error('SHEET_NO_DATA'));
+        resolve({periode, employees});
+      }catch(err){ reject(err); }
+    };
+    reader.onerror=()=>reject(new Error('FILE_READ_ERROR'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+async function prosesFile(){
+  const periodeInput = document.getElementById('periodeInput');
+  const fileEl = document.getElementById('fileInput');
+  const file = fileEl.files[0];
+  setUploadMessage('clear','');
+  document.getElementById('previewWrap').style.display='none';
+
+  if(!file){ setUploadMessage('error','Pilih file Excel, CSV, atau PDF terlebih dahulu.'); return; }
+
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+  try{
+    let result;
+    if(isPdf){
+      setUploadMessage('ok','Membaca tabel PDF… tunggu sampai pratinjau selesai.');
+      result = await parseTppPdf(file);
+      if(result.periode && !periodeInput.value.trim()) periodeInput.value = result.periode;
+    }else{
+      if(!periodeInput.value.trim()){
+        setUploadMessage('error','Isi periode terlebih dahulu (contoh: September 2026).');
+        return;
+      }
+      result = await prosesSpreadsheet(file, periodeInput.value.trim());
+    }
+
+    const periode = periodeInput.value.trim() || result.periode;
+    if(!periode){
+      setUploadMessage('error','Periode tidak berhasil dibaca dari file. Isi periode secara manual.');
+      return;
+    }
+    parsedPreview = {periode, employees:result.employees};
+    tampilkanPreview(result.employees);
+    setUploadMessage('clear','');
+  }catch(err){
+    console.error('Gagal membaca file TPP:',err);
+    const msg = String(err.message || '');
+    if(msg === 'PDF_ENGINE_UNAVAILABLE') setUploadMessage('error','Mesin pembaca PDF belum termuat. Periksa koneksi internet lalu muat ulang halaman.');
+    else if(msg === 'PDF_NO_DATA') setUploadMessage('error','Tabel TPP tidak berhasil dikenali. Pastikan PDF menggunakan format Laporan Perhitungan TPP Disnakertrans.');
+    else if(msg.startsWith('PDF_VALIDATION_MISMATCH:')){
+      const parts=msg.split(':');
+      setUploadMessage('error',`Validasi PDF gagal pada baris ${parts[1]} (${parts[2]}): jumlah pada PDF ${formatRupiah(parts[3])}, sedangkan hasil perhitungan ${formatRupiah(parts[4])}. Data tidak dipublikasikan.`);
+    }else if(msg === 'SHEET_NO_DATA') setUploadMessage('error','Tidak ada baris data yang valid. Periksa nama kolom di file Excel/CSV.');
+    else setUploadMessage('error','Gagal membaca file. Pastikan PDF sesuai format laporan TPP atau Excel/CSV sesuai template.');
+  }
 }
 
 function tampilkanPreview(employees){
