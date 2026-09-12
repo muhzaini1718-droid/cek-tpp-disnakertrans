@@ -13,7 +13,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <!-- SheetJS, untuk membaca file Excel/CSV yang diupload admin -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<!-- PDF.js untuk membaca tabel PDF langsung di browser admin -->
+<!-- PDF.js, untuk membaca PDF TPP langsung di browser admin -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
 <style>
@@ -85,6 +85,14 @@
   .preview-wrap{max-height:260px; overflow-y:auto; border:1px solid var(--line); padding:0 10px;}
   .btn-row{display:flex; gap:10px; margin-top:16px;}
   .btn-row button{flex:1;}
+  .detected-box{margin:14px 0;padding:12px 14px;background:var(--paper-2);border-left:3px solid var(--green);font-size:13px;line-height:1.5;}
+  .detected-box strong{color:var(--navy);}
+  .status-pill{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600;margin-left:6px;background:#e9f3ee;color:var(--green);}
+  .status-select{width:100%;padding:11px 12px;border:1px solid #c7c1ae;border-radius:2px;font-size:14px;background:var(--paper-2);color:var(--ink);}
+  .validation-box{margin:14px 0;padding:12px 14px;border:1px solid var(--line);font-size:12.5px;line-height:1.55;}
+  .validation-box.ok{background:#e9f3ee;border-color:#a9d1bb;color:var(--green);}
+  .validation-box.warn{background:#fff5df;border-color:#e2c37b;color:#76580a;}
+  .validation-box.bad{background:#fbeae6;border-color:#e3b6a8;color:var(--red);}
 </style>
 </head>
 <body>
@@ -134,6 +142,7 @@
     </div>
     <div class="slip-body">
       <div class="meta-row"><span>NIP</span><span id="oNip"></span></div>
+      <div class="meta-row"><span>Status Kepegawaian</span><span id="oStatus"></span></div>
       <div class="meta-row"><span>Kelas Jabatan</span><span id="oKelas"></span></div>
       <div class="komponen">
         <div class="komponen-title">Komponen Pembayaran</div>
@@ -168,19 +177,35 @@
   <div class="card" id="adminPanel" style="display:none;">
     <span class="admin-tag">MODE ADMIN</span>
     <h2>Unggah Data TPP Bulanan</h2>
-    <p class="desc">Unggah Excel/CSV atau PDF laporan TPP. Untuk PDF, sistem membaca tabel langsung di browser lalu menampilkan pratinjau sebelum dipublikasikan.</p>
+    <p class="desc">Unggah PDF TPP PNS atau P3K, atau tetap gunakan Excel/CSV. Untuk PDF, sistem mendeteksi jenis pegawai dan periode secara otomatis sebelum data dipublikasikan.</p>
     <div class="error-msg" id="uploadErrMsg"></div>
     <div class="ok-msg" id="uploadOkMsg"></div>
 
     <div class="field">
-      <label for="periodeInput">Periode (contoh: September 2026)</label>
-      <input type="text" id="periodeInput" placeholder="September 2026">
+      <label for="periodeInput">Periode</label>
+      <input type="text" id="periodeInput" placeholder="Otomatis dari PDF, contoh: Agustus 2026">
+      <div class="hint">Jika PDF dibaca, periode akan diambil dari judul dokumen. Anda masih dapat mengoreksinya sebelum proses.</div>
     </div>
+
     <div class="field">
-      <label for="fileInput">File TPP (Excel / CSV / PDF)</label>
-      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv,.pdf,application/pdf">
-      <div class="hint">PDF mengikuti format Laporan Perhitungan TPP Disnakertrans. Sistem akan membaca Nama, NIP, Jabatan, Kelas Jabatan, seluruh komponen pembayaran, lalu menghitung dan memvalidasi Jumlah TPP.</div>
+      <label for="statusInput">Jenis Pegawai</label>
+      <select id="statusInput" class="status-select">
+        <option value="AUTO">Otomatis (khusus PDF)</option>
+        <option value="PNS">PNS</option>
+        <option value="P3K">P3K</option>
+      </select>
+      <div class="hint">Untuk PDF sebaiknya pilih “Otomatis”. Untuk Excel/CSV, pilih PNS atau P3K.</div>
     </div>
+
+    <div class="field">
+      <label for="fileInput">File TPP</label>
+      <input type="file" id="fileInput" accept=".pdf,.xlsx,.xls,.csv">
+      <div class="hint">PDF PNS/P3K akan dibaca langsung di browser. Excel/CSV tetap memakai format kolom yang sudah ada.</div>
+    </div>
+
+    <div id="detectedBox" class="detected-box" style="display:none;"></div>
+    <div id="validationBox" class="validation-box" style="display:none;"></div>
+
     <button onclick="prosesFile()">Proses &amp; Pratinjau</button>
 
     <div id="previewWrap" style="display:none;">
@@ -201,7 +226,7 @@
 
 <script>
 /* =======================================================
-   Konfigurasi Firebase project Disnakertrans
+   GANTI BAGIAN INI dengan Firebase Config dari project Anda
    (Firebase Console > Project settings > Your apps > SDK setup)
    ======================================================= */
 const firebaseConfig = {
@@ -215,101 +240,7 @@ const firebaseConfig = {
 
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
-
-// Firestore Anda memakai named database, bukan database (default).
-// Firebase Web SDK compat yang dipakai aplikasi ini mengarah ke (default),
-// sehingga akses Firestore dilakukan melalui REST API dengan Firebase ID token.
-const FIRESTORE_DATABASE_ID = "tppdisnaker";
-const FIRESTORE_REST_BASE =
-  `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${FIRESTORE_DATABASE_ID}/documents/tpp/current`;
-
-function normalizeNip(value){
-  return String(value ?? '').trim().replace(/[^0-9]/g, '');
-}
-
-function firestoreValueToJs(value){
-  if(!value) return null;
-  if(Object.prototype.hasOwnProperty.call(value, 'nullValue')) return null;
-  if(Object.prototype.hasOwnProperty.call(value, 'booleanValue')) return value.booleanValue;
-  if(Object.prototype.hasOwnProperty.call(value, 'stringValue')) return value.stringValue;
-  if(Object.prototype.hasOwnProperty.call(value, 'integerValue')) return Number(value.integerValue);
-  if(Object.prototype.hasOwnProperty.call(value, 'doubleValue')) return Number(value.doubleValue);
-  if(Object.prototype.hasOwnProperty.call(value, 'timestampValue')) return value.timestampValue;
-  if(Object.prototype.hasOwnProperty.call(value, 'arrayValue')){
-    return (value.arrayValue.values || []).map(firestoreValueToJs);
-  }
-  if(Object.prototype.hasOwnProperty.call(value, 'mapValue')){
-    const out = {};
-    const fields = value.mapValue.fields || {};
-    Object.keys(fields).forEach(k => out[k] = firestoreValueToJs(fields[k]));
-    return out;
-  }
-  return null;
-}
-
-function jsToFirestoreValue(value){
-  if(value === null) return {nullValue: null};
-  if(Array.isArray(value)){
-    return {arrayValue:{values:value.map(jsToFirestoreValue)}};
-  }
-  if(typeof value === 'boolean') return {booleanValue:value};
-  if(typeof value === 'number') return Number.isInteger(value)
-    ? {integerValue:String(value)}
-    : {doubleValue:value};
-  if(typeof value === 'string') return {stringValue:value};
-  if(typeof value === 'object'){
-    const fields = {};
-    Object.keys(value).forEach(k => fields[k] = jsToFirestoreValue(value[k]));
-    return {mapValue:{fields}};
-  }
-  return {nullValue:null};
-}
-
-async function firestoreGetCurrent(){
-  const response = await fetch(FIRESTORE_REST_BASE + '?_=' + Date.now(), {
-    method:'GET',
-    cache:'no-store',
-    headers:{'Accept':'application/json'}
-  });
-  if(response.status === 404) return null;
-  if(!response.ok){
-    let detail = '';
-    try{ detail = await response.text(); }catch(_){}
-    throw new Error(`Firestore GET ${response.status}: ${detail || response.statusText}`);
-  }
-  const doc = await response.json();
-  const fields = doc.fields || {};
-  const data = {};
-  Object.keys(fields).forEach(k => data[k] = firestoreValueToJs(fields[k]));
-  return data;
-}
-
-async function firestoreSaveCurrent(data){
-  const user = auth.currentUser;
-  if(!user) throw new Error('ADMIN_NOT_AUTHENTICATED');
-  const idToken = await user.getIdToken(true);
-  const body = {
-    fields: {
-      periode: jsToFirestoreValue(data.periode),
-      employees: jsToFirestoreValue(data.employees),
-      updatedAt: {timestampValue:new Date().toISOString()}
-    }
-  };
-  const response = await fetch(FIRESTORE_REST_BASE, {
-    method:'PATCH',
-    headers:{
-      'Content-Type':'application/json',
-      'Authorization':`Bearer ${idToken}`
-    },
-    body:JSON.stringify(body)
-  });
-  if(!response.ok){
-    let detail = '';
-    try{ detail = await response.text(); }catch(_){}
-    throw new Error(`Firestore PATCH ${response.status}: ${detail || response.statusText}`);
-  }
-  return response.json();
-}
+const db = firebase.firestore();
 
 let currentEmployees = [];
 let parsedPreview = null;
@@ -329,33 +260,35 @@ function showOnly(id){
 async function loadData(){
   showOnly('loadingBox');
   try{
-    const data = await firestoreGetCurrent();
-    if(data && Array.isArray(data.employees) && data.employees.length){
-      currentEmployees = data.employees;
-      document.getElementById('periodeNote').textContent = "Data periode " + (data.periode || "-") + ". Aplikasi ini terhubung ke database aman — hanya rincian TPP Anda sendiri yang ditampilkan.";
+    const doc = await db.collection('tpp').doc('current').get();
+    if(doc.exists && doc.data().employees && doc.data().employees.length){
+      const data = doc.data();
+      currentEmployees = (data.employees || []).map(e => ({
+        ...e,
+        statusKepegawaian: e.statusKepegawaian || "PNS"
+      }));
+      document.getElementById('periodeNote').textContent = "Data periode " + (data.periode || "-") + ". Aplikasi terhubung ke database aman — hanya rincian TPP Anda sendiri yang ditampilkan.";
       document.getElementById('slipPeriode').textContent = "Rincian TPP — " + (data.periode || "-");
       showOnly('loginCard');
     } else {
-      currentEmployees = [];
       showOnly('noDataCard');
     }
   }catch(e){
-    console.error('Gagal memuat Firestore:', e);
-    currentEmployees = [];
+    console.error(e);
     showOnly('noDataCard');
   }
 }
 
 /* ---------- Login pegawai ---------- */
 function doLogin(){
-  const nip = normalizeNip(document.getElementById('nipInput').value);
+  const nip = document.getElementById('nipInput').value.trim();
   const tgl = document.getElementById('tglInput').value;
   const errBox = document.getElementById('errMsg');
   errBox.style.display = 'none';
 
   if(!nip || !tgl){ errBox.textContent = "Mohon isi NIP dan tanggal lahir."; errBox.style.display='block'; return; }
 
-  const p = currentEmployees.find(x => normalizeNip(x.nip) === nip);
+  const p = currentEmployees.find(x => String(x.nip).trim() === nip);
   if(!p){ errBox.textContent = "NIP tidak ditemukan dalam data TPP periode ini."; errBox.style.display='block'; return; }
 
   const nipBirth = String(p.nip).trim().substring(0,8);
@@ -365,6 +298,7 @@ function doLogin(){
   document.getElementById('oNama').textContent = p.nama;
   document.getElementById('oJabatan').textContent = p.jabatan;
   document.getElementById('oNip').textContent = p.nip;
+  document.getElementById('oStatus').textContent = p.statusKepegawaian || "PNS";
   document.getElementById('oKelas').textContent = p.kelas;
   document.getElementById('oPrestasi').textContent = formatRupiah(p.prestasi);
   document.getElementById('oBeban').textContent = formatRupiah(p.beban);
@@ -401,291 +335,458 @@ function doAdminLogout(){
   auth.signOut().then(loadData);
 }
 
-/* ---------- Proses file upload ---------- */
-function setUploadMessage(type, text){
-  const errBox = document.getElementById('uploadErrMsg');
-  const okBox = document.getElementById('uploadOkMsg');
-  errBox.style.display='none';
-  okBox.style.display='none';
-  if(type==='error'){
-    errBox.textContent=text;
-    errBox.style.display='block';
-  }else if(type==='ok'){
-    okBox.textContent=text;
-    okBox.style.display='block';
-  }
+/* ---------- PDF / Excel / CSV parser ---------- */
+if(window.pdfjsLib){
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 }
 
-function parseMoneyToken(value){
-  const s = String(value ?? '').trim();
+function normalizeNip(v){
+  return String(v == null ? '' : v).replace(/\D/g,'').slice(0,18);
+}
+
+function moneyValue(v){
+  if(v == null) return 0;
+  const s = String(v).trim();
   if(!s || s === '-') return 0;
-  const digits = s.replace(/[^0-9]/g,'');
-  return digits ? Number(digits) : 0;
+  const digits = s.replace(/\D/g,'');
+  return Number(digits) || 0;
 }
 
-function extractFirstMoney(items, xMin, xMax){
-  const candidates = items
-    .filter(it => it.x >= xMin && it.x < xMax)
-    .map(it => String(it.text || '').trim())
-    .filter(t => /^(?:\d{1,3}(?:\.\d{3})+|\d+|-)$/.test(t));
-  if(!candidates.length) return 0;
-  // Pada header PDF ada kata "Kerja" di zona Prestasi/Beban; hanya token angka yang dipakai.
-  return parseMoneyToken(candidates[candidates.length - 1]);
+function detectStatusFromText(text){
+  const t = String(text || '').toUpperCase();
+  if(t.includes('PEGAWAI PEMERINTAH DENGAN PERJANJIAN KERJA') || /\bP3K\b/.test(t)) return 'P3K';
+  if(t.includes('PEGAWAI NEGERI SIPIL') || /\bPNS\b/.test(t)) return 'PNS';
+  return '';
 }
 
-function extractColumnText(items, xMin, xMax){
-  return items
-    .filter(it => it.x >= xMin && it.x < xMax)
-    .sort((a,b) => (a.y-b.y) || (a.x-b.x))
-    .map(it => String(it.text || '').trim())
-    .filter(Boolean)
-    .join(' ')
-    .replace(/\s+/g,' ')
-    .trim();
-}
-
-function extractPeriodFromPdf(items){
-  const text = items.slice().sort((a,b)=>(a.y-b.y)||(a.x-b.x)).map(it=>it.text).join(' ');
-  const m = text.match(/BULAN\s+([A-Z]+)\s+(20\d{2})/i);
+function detectPeriodFromText(text){
+  const t = String(text || '');
+  const m = t.match(/BULAN\s+([A-ZÀ-Ÿ]+)\s+(\d{4})/i);
   if(!m) return '';
-  const months = {
-    JANUARI:'Januari', FEBRUARI:'Februari', MARET:'Maret', APRIL:'April', MEI:'Mei', JUNI:'Juni',
-    JULI:'Juli', AGUSTUS:'Agustus', SEPTEMBER:'September', OKTOBER:'Oktober', NOVEMBER:'November', DESEMBER:'Desember'
-  };
-  return `${months[m[1].toUpperCase()] || m[1]} ${m[2]}`;
+  return m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase() + ' ' + m[2];
 }
 
-async function extractPdfPageItems(page){
-  const content = await page.getTextContent({normalizeWhitespace:true, disableCombineTextItems:false});
-  return content.items.map(it => ({
-    text: String(it.str || '').trim(),
-    x: Number(it.transform?.[4] || 0),
-    y: Number(it.transform?.[5] || 0)
-  })).filter(it=>it.text);
-}
-
-async function parseTppPdf(file){
-  if(typeof pdfjsLib === 'undefined') throw new Error('PDF_ENGINE_UNAVAILABLE');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+/*
+  PDF parser:
+  - Membaca posisi teks, bukan OCR.
+  - Menemukan NIP 18 digit sebagai anchor setiap pegawai.
+  - Mengambil teks di sekitar anchor sesuai batas antar-NIP.
+  - Mengambil kelas jabatan lalu 7 angka pembayaran:
+    Prestasi, Beban, Tempat, Kondisi, Kelangkaan, Lain, Jumlah.
+  - Nama dan jabatan diambil dari kolom relatif terhadap NIP.
+*/
+async function parsePdfFile(file){
+  if(!window.pdfjsLib) throw new Error('Modul pembaca PDF belum termuat. Muat ulang halaman lalu coba lagi.');
 
   const buffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({data:buffer}).promise;
-  const allEmployees = [];
-  let detectedPeriod = '';
+  const pdf = await pdfjsLib.getDocument({data: new Uint8Array(buffer)}).promise;
 
-  // Format laporan TPP menggunakan posisi kolom yang konsisten. NIP menjadi jangkar setiap baris.
-  const Z = {
-    no:[25,52], nama:[50,145], nip:[140,235], jabatan:[232,385], kelas:[380,422],
-    prestasi:[420,475], beban:[475,530], tempat:[530,575], kondisi:[575,620],
-    langka:[620,680], lain:[680,755], jumlah:[755,815]
-  };
+  let allRows = [];
+  let fullText = '';
 
   for(let pageNo=1; pageNo<=pdf.numPages; pageNo++){
     const page = await pdf.getPage(pageNo);
-    const items = await extractPdfPageItems(page);
-    if(!detectedPeriod) detectedPeriod = extractPeriodFromPdf(items);
+    const viewport = page.getViewport({scale:1});
+    const content = await page.getTextContent();
 
-    const nipAnchors = items
-      .filter(it => it.x >= Z.nip[0] && it.x < Z.nip[1] && /^\d{18}$/.test(it.text))
+    const items = content.items.map(it => {
+      const tr = it.transform || [1,0,0,1,0,0];
+      return {
+        text: String(it.str || '').trim(),
+        x: tr[4],
+        y: viewport.height - tr[5],
+        w: Number(it.width || 0),
+        h: Math.abs(Number(tr[3] || 0))
+      };
+    }).filter(x => x.text);
+
+    fullText += items.map(x=>x.text).join(' ') + '\n';
+
+    const nipItems = items
+      .filter(x => /^\d{18}$/.test(x.text.replace(/\s/g,'')))
+      .filter(nipItem => items.some(x =>
+        x !== nipItem &&
+        x.x > nipItem.x + 40 &&
+        Math.abs(x.y - nipItem.y) <= 15 &&
+        /^\d{1,2}$/.test(x.text) &&
+        Number(x.text) >= 1 && Number(x.text) <= 20
+      ))
       .sort((a,b)=>a.y-b.y);
 
-    if(!nipAnchors.length) continue;
+    if(!nipItems.length) continue;
 
-    for(let i=0;i<nipAnchors.length;i++){
-      const anchor = nipAnchors[i];
-      const prevY = i>0 ? nipAnchors[i-1].y : anchor.y-30;
-      const nextY = i<nipAnchors.length-1 ? nipAnchors[i+1].y : anchor.y+30;
-      const rowMin = (prevY + anchor.y) / 2;
-      const rowMax = (anchor.y + nextY) / 2;
-      const rowItems = items.filter(it => it.y >= rowMin && it.y < rowMax);
+    for(let i=0;i<nipItems.length;i++){
+      const nipItem = nipItems[i];
+      const prevY = i>0 ? nipItems[i-1].y : nipItem.y - 15;
+      const nextY = i<nipItems.length-1 ? nipItems[i+1].y : nipItem.y + 15;
 
-      // NIP pada halaman tanda tangan tidak memiliki nomor urut pada kolom No; abaikan.
-      const noText = extractColumnText(rowItems, Z.no[0], Z.no[1]);
-      if(!/^\d{1,2}$/.test(noText)) continue;
+      const top = (prevY + nipItem.y) / 2;
+      const bottom = (nipItem.y + nextY) / 2;
+      const band = items.filter(x => x.y >= top && x.y < bottom);
 
-      const prestasi = extractFirstMoney(rowItems, ...Z.prestasi);
-      const beban = extractFirstMoney(rowItems, ...Z.beban);
-      const tempat = extractFirstMoney(rowItems, ...Z.tempat);
-      const kondisi = extractFirstMoney(rowItems, ...Z.kondisi);
-      const langka = extractFirstMoney(rowItems, ...Z.langka);
-      const lain = extractFirstMoney(rowItems, ...Z.lain);
-      const parsedJumlah = extractFirstMoney(rowItems, ...Z.jumlah);
-      const calculatedJumlah = prestasi + beban + tempat + kondisi + langka + lain;
+      const nip = normalizeNip(nipItem.text);
 
-      const employee = {
-        no:Number(noText),
-        nama:extractColumnText(rowItems, ...Z.nama),
-        nip:normalizeNip(anchor.text),
-        jabatan:extractColumnText(rowItems, ...Z.jabatan),
-        kelas:extractColumnText(rowItems, ...Z.kelas),
-        prestasi, beban, tempat, kondisi, langka, lain,
-        jumlah:calculatedJumlah,
-        pdfJumlah:parsedJumlah
-      };
+      // Find class jabatan: angka 1-20 setelah posisi NIP.
+      const classCandidates = band
+        .filter(x => x.x > nipItem.x + 40 && /^\d{1,2}$/.test(x.text))
+        .map(x => ({...x, value:Number(x.text)}))
+        .filter(x => x.value >= 1 && x.value <= 20)
+        .sort((a,b)=>a.x-b.x);
 
-      if(!employee.nama || !employee.jabatan || employee.nip.length!==18) continue;
-      if(employee.pdfJumlah && employee.pdfJumlah !== employee.jumlah){
-        throw new Error(`PDF_VALIDATION_MISMATCH:${employee.no}:${employee.nama}:${employee.pdfJumlah}:${employee.jumlah}`);
-      }
-      allEmployees.push(employee);
+      const classItem = classCandidates[0];
+      if(!classItem) continue;
+
+      // Ambil token pembayaran setelah kelas. Format PDF kantor memakai titik ribuan atau "-".
+      const paymentTokens = band
+        .filter(x => x.x > classItem.x + 12)
+        .filter(x => /^-?$|^\d[\d.]*$/.test(x.text))
+        .sort((a,b)=>a.x-b.x);
+
+      const vals = paymentTokens.map(x=>moneyValue(x.text));
+      if(vals.length < 7) continue;
+
+      const amounts = vals.slice(0,7);
+
+      // Kolom nama berada di kiri NIP; jabatan berada di antara NIP dan kelas.
+      const nameItems = band
+        .filter(x => x.x >= 50 && x.x < nipItem.x - 5)
+        .filter(x => Math.abs(x.y - nipItem.y) <= 15)
+        .sort((a,b)=>a.y-b.y || a.x-b.x);
+
+      const jobItems = band
+        .filter(x => x.x > nipItem.x + 60 && x.x < classItem.x - 8)
+        .filter(x => Math.abs(x.y - nipItem.y) <= 15)
+        .sort((a,b)=>a.y-b.y || a.x-b.x);
+
+      const nama = nameItems.map(x=>x.text).join(' ').replace(/\s+/g,' ').trim();
+      const jabatan = jobItems.map(x=>x.text).join(' ').replace(/\s+/g,' ').trim();
+
+      if(!nama || !nip) continue;
+
+      const [prestasi,beban,tempat,kondisi,langka,lain,jumlahPdf] = amounts;
+      const jumlahHitung = prestasi+beban+tempat+kondisi+langka+lain;
+
+      allRows.push({
+        nama,
+        nip,
+        jabatan,
+        kelas: classItem.value,
+        prestasi,beban,tempat,kondisi,langka,lain,
+        jumlah: jumlahHitung,
+        jumlahPdf,
+        page: pageNo
+      });
     }
   }
 
-  // Hindari duplikasi NIP jika PDF memiliki pengulangan halaman/teks.
-  const unique = [];
-  const seen = new Set();
-  for(const e of allEmployees){
-    if(seen.has(e.nip)) continue;
-    seen.add(e.nip);
-    delete e.no;
-    delete e.pdfJumlah;
-    unique.push(e);
+  // Deduplicate NIP, karena header/footer atau overlap posisi kadang dapat terbaca ulang.
+  const byNip = new Map();
+  allRows.forEach(row => {
+    if(!byNip.has(row.nip)) byNip.set(row.nip,row);
+  });
+
+  const employees = Array.from(byNip.values());
+
+  if(!employees.length){
+    throw new Error('PDF tidak mengandung tabel TPP yang dapat dibaca. Pastikan PDF merupakan PDF teks, bukan hasil scan gambar.');
   }
 
-  if(!unique.length) throw new Error('PDF_NO_DATA');
-  unique.sort((a,b)=>a.nama.localeCompare(b.nama,'id'));
-  return {periode:detectedPeriod, employees:unique};
+  const status = detectStatusFromText(fullText);
+  const periode = detectPeriodFromText(fullText);
+
+  return {employees, status, periode, pages:pdf.numPages, fullText};
 }
 
-function prosesSpreadsheet(file, periode){
-  return new Promise((resolve,reject)=>{
-    const reader = new FileReader();
-    reader.onload = function(e){
-      try{
-        const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(ws, {defval:'', raw:false});
-        const employees = rows.map(r=>{
-          const get = (key)=>{
-            const k = Object.keys(r).find(x=>x.trim().toLowerCase()===key);
-            return k===undefined ? '' : r[k];
-          };
-          const prestasi = parseMoneyToken(get('prestasi'));
-          const beban = parseMoneyToken(get('beban'));
-          const tempat = parseMoneyToken(get('tempat'));
-          const kondisi = parseMoneyToken(get('kondisi'));
-          const langka = parseMoneyToken(get('kelangkaan'));
-          const lain = parseMoneyToken(get('lain'));
-          return {
-            nama:String(get('nama')||'').trim(),
-            nip:normalizeNip(get('nip')),
-            jabatan:String(get('jabatan')||'').trim(),
-            kelas:String(get('kelas')||'').trim(),
-            prestasi,beban,tempat,kondisi,langka,lain,
-            jumlah:prestasi+beban+tempat+kondisi+langka+lain
-          };
-        }).filter(x=>x.nip);
-        if(!employees.length) return reject(new Error('SHEET_NO_DATA'));
-        resolve({periode, employees});
-      }catch(err){ reject(err); }
+async function parseSpreadsheet(file, forcedStatus){
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(new Uint8Array(buffer), {type:'array'});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, {defval:0});
+
+  const employees = rows.map(r=>{
+    const get = (key)=>{
+      const k = Object.keys(r).find(x=>String(x).trim().toLowerCase()===key);
+      return k === undefined ? '' : r[k];
     };
-    reader.onerror=()=>reject(new Error('FILE_READ_ERROR'));
-    reader.readAsArrayBuffer(file);
+    const prestasi = moneyValue(get('prestasi'));
+    const beban = moneyValue(get('beban'));
+    const tempat = moneyValue(get('tempat'));
+    const kondisi = moneyValue(get('kondisi'));
+    const langka = moneyValue(get('kelangkaan'));
+    const lain = moneyValue(get('lain'));
+    const jumlah = prestasi+beban+tempat+kondisi+langka+lain;
+
+    return {
+      nama:String(get('nama')||'').trim(),
+      nip:normalizeNip(get('nip')),
+      jabatan:String(get('jabatan')||'').trim(),
+      kelas:get('kelas')||'',
+      prestasi,beban,tempat,kondisi,langka,lain,jumlah,
+      statusKepegawaian:forcedStatus
+    };
+  }).filter(x=>x.nip);
+
+  if(!employees.length) throw new Error('Tidak ada baris data Excel/CSV yang valid.');
+  return {employees, status:forcedStatus, periode:''};
+}
+
+function validateEmployees(employees){
+  const issues = [];
+  const nips = new Set();
+
+  employees.forEach((e,idx)=>{
+    if(!/^\d{18}$/.test(e.nip)) issues.push(`Baris ${idx+1}: NIP harus 18 digit.`);
+    if(nips.has(e.nip)) issues.push(`NIP duplikat: ${e.nip}.`);
+    nips.add(e.nip);
+
+    const expected = Number(e.prestasi||0)+Number(e.beban||0)+Number(e.tempat||0)+
+      Number(e.kondisi||0)+Number(e.langka||0)+Number(e.lain||0);
+
+    if(Number(e.jumlah||0) !== expected){
+      issues.push(`Jumlah TPP tidak sesuai pada ${e.nama || e.nip}.`);
+    }
   });
+
+  return issues;
+}
+
+function showDetection(status, periode, employees, extraText){
+  const box = document.getElementById('detectedBox');
+  if(!box) return;
+  const statusText = status === 'P3K' ? 'P3K' : status === 'PNS' ? 'PNS' : 'Belum terdeteksi';
+  box.innerHTML = `<strong>Hasil pembacaan:</strong> ${statusText} · ${employees.length} pegawai` +
+    (periode ? ` · Periode ${periode}` : '') +
+    (extraText ? `<br>${extraText}` : '');
+  box.style.display='block';
+}
+
+function showValidation(employees, pdfRows){
+  const box = document.getElementById('validationBox');
+  if(!box) return;
+
+  const issues = validateEmployees(employees);
+  const calcTotal = employees.reduce((s,e)=>s+Number(e.jumlah||0),0);
+  const pdfTotal = pdfRows ? pdfRows.reduce((s,e)=>s+Number(e.jumlahPdf||0),0) : null;
+
+  if(issues.length){
+    box.className='validation-box bad';
+    box.innerHTML='<strong>Validasi gagal.</strong><br>'+issues.slice(0,8).join('<br>');
+  }else if(pdfRows && pdfTotal !== calcTotal){
+    box.className='validation-box bad';
+    box.innerHTML=`<strong>Validasi nominal gagal.</strong><br>Total komponen: ${formatRupiah(calcTotal)}<br>Total kolom Jumlah PDF: ${formatRupiah(pdfTotal)}<br>Publikasi diblokir sampai datanya diperbaiki.`;
+  }else{
+    box.className='validation-box ok';
+    box.innerHTML=`<strong>Validasi PASS.</strong><br>${employees.length} pegawai · Total TPP ${formatRupiah(calcTotal)}` +
+      (pdfRows ? ` · Total PDF ${formatRupiah(pdfTotal)}` : '');
+  }
+  box.style.display='block';
 }
 
 async function prosesFile(){
+  const errBox = document.getElementById('uploadErrMsg');
+  const okBox = document.getElementById('uploadOkMsg');
+  const detectedBox = document.getElementById('detectedBox');
+  const validationBox = document.getElementById('validationBox');
+
+  errBox.style.display='none';
+  okBox.style.display='none';
+  detectedBox.style.display='none';
+  validationBox.style.display='none';
+
   const periodeInput = document.getElementById('periodeInput');
+  const statusInput = document.getElementById('statusInput');
   const fileEl = document.getElementById('fileInput');
+
+  if(!fileEl.files.length){
+    errBox.textContent='Pilih file TPP terlebih dahulu.';
+    errBox.style.display='block';
+    return;
+  }
+
   const file = fileEl.files[0];
-  setUploadMessage('clear','');
-  document.getElementById('previewWrap').style.display='none';
+  const ext = file.name.toLowerCase().split('.').pop();
 
-  if(!file){ setUploadMessage('error','Pilih file Excel, CSV, atau PDF terlebih dahulu.'); return; }
-
-  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
   try{
     let result;
-    if(isPdf){
-      setUploadMessage('ok','Membaca tabel PDF… tunggu sampai pratinjau selesai.');
-      result = await parseTppPdf(file);
-      if(result.periode && !periodeInput.value.trim()) periodeInput.value = result.periode;
-    }else{
-      if(!periodeInput.value.trim()){
-        setUploadMessage('error','Isi periode terlebih dahulu (contoh: September 2026).');
+
+    if(ext === 'pdf'){
+      result = await parsePdfFile(file);
+
+      let status = result.status || '';
+      if(statusInput.value !== 'AUTO') status = statusInput.value;
+      if(!status){
+        errBox.textContent='Jenis pegawai PNS/P3K tidak berhasil dideteksi dari PDF. Pilih PNS atau P3K secara manual.';
+        errBox.style.display='block';
         return;
       }
-      result = await prosesSpreadsheet(file, periodeInput.value.trim());
-    }
 
-    const periode = periodeInput.value.trim() || result.periode;
-    if(!periode){
-      setUploadMessage('error','Periode tidak berhasil dibaca dari file. Isi periode secara manual.');
+      const periode = periodeInput.value.trim() || result.periode;
+      if(!periode){
+        errBox.textContent='Periode tidak berhasil dideteksi dari PDF. Isi periode secara manual.';
+        errBox.style.display='block';
+        return;
+      }
+
+      const employees = result.employees.map(e=>({
+        nama:e.nama,
+        nip:e.nip,
+        jabatan:e.jabatan,
+        kelas:e.kelas,
+        prestasi:e.prestasi,
+        beban:e.beban,
+        tempat:e.tempat,
+        kondisi:e.kondisi,
+        langka:e.langka,
+        lain:e.lain,
+        jumlah:e.jumlah,
+        statusKepegawaian:status
+      }));
+
+      showDetection(status, periode, employees, `File: ${file.name} · ${result.pages} halaman`);
+      showValidation(employees, result.employees);
+
+      const issues = validateEmployees(employees);
+      const calcTotal = employees.reduce((s,e)=>s+e.jumlah,0);
+      const pdfTotal = result.employees.reduce((s,e)=>s+e.jumlahPdf,0);
+      if(issues.length || calcTotal !== pdfTotal){
+        errBox.textContent='Data PDF terbaca, tetapi validasi belum PASS. Jangan dipublikasikan.';
+        errBox.style.display='block';
+        return;
+      }
+
+      parsedPreview = {periode, employees, status, source:'PDF'};
+      tampilkanPreview(employees);
       return;
     }
-    parsedPreview = {periode, employees:result.employees};
-    tampilkanPreview(result.employees);
-    setUploadMessage('clear','');
+
+    if(!['xlsx','xls','csv'].includes(ext)){
+      throw new Error('Format file tidak didukung. Gunakan PDF, XLSX, XLS, atau CSV.');
+    }
+
+    if(statusInput.value === 'AUTO'){
+      throw new Error('Untuk Excel/CSV, pilih Jenis Pegawai PNS atau P3K terlebih dahulu.');
+    }
+
+    const periode = periodeInput.value.trim();
+    if(!periode){
+      throw new Error('Isi periode terlebih dahulu untuk Excel/CSV.');
+    }
+
+    result = await parseSpreadsheet(file,statusInput.value);
+    const employees = result.employees;
+
+    showDetection(statusInput.value, periode, employees, `File: ${file.name}`);
+    showValidation(employees, null);
+
+    const issues = validateEmployees(employees);
+    if(issues.length){
+      throw new Error('Validasi Excel/CSV gagal. Periksa data yang ditampilkan.');
+    }
+
+    parsedPreview = {periode, employees, status:statusInput.value, source:'SPREADSHEET'};
+    tampilkanPreview(employees);
+
   }catch(err){
-    console.error('Gagal membaca file TPP:',err);
-    const msg = String(err.message || '');
-    if(msg === 'PDF_ENGINE_UNAVAILABLE') setUploadMessage('error','Mesin pembaca PDF belum termuat. Periksa koneksi internet lalu muat ulang halaman.');
-    else if(msg === 'PDF_NO_DATA') setUploadMessage('error','Tabel TPP tidak berhasil dikenali. Pastikan PDF menggunakan format Laporan Perhitungan TPP Disnakertrans.');
-    else if(msg.startsWith('PDF_VALIDATION_MISMATCH:')){
-      const parts=msg.split(':');
-      setUploadMessage('error',`Validasi PDF gagal pada baris ${parts[1]} (${parts[2]}): jumlah pada PDF ${formatRupiah(parts[3])}, sedangkan hasil perhitungan ${formatRupiah(parts[4])}. Data tidak dipublikasikan.`);
-    }else if(msg === 'SHEET_NO_DATA') setUploadMessage('error','Tidak ada baris data yang valid. Periksa nama kolom di file Excel/CSV.');
-    else setUploadMessage('error','Gagal membaca file. Pastikan PDF sesuai format laporan TPP atau Excel/CSV sesuai template.');
+    console.error(err);
+    errBox.textContent = err.message || 'Gagal membaca file.';
+    errBox.style.display='block';
   }
 }
 
 function tampilkanPreview(employees){
   const table = document.getElementById('previewTable');
-  let html = '<tr><th>Nama</th><th>NIP</th><th style="text-align:right;">Jumlah TPP</th></tr>';
+  let html = '<tr><th>Nama</th><th>NIP</th><th>Status</th><th style="text-align:right;">Jumlah TPP</th></tr>';
   let total = 0;
-  employees.forEach(e=>{ total += e.jumlah; html += `<tr><td>${e.nama}</td><td>${e.nip}</td><td class="num">${formatRupiah(e.jumlah)}</td></tr>`; });
+  employees.forEach(e=>{
+    total += Number(e.jumlah)||0;
+    html += `<tr><td>${escapeHtml(e.nama)}</td><td>${escapeHtml(e.nip)}</td><td>${escapeHtml(e.statusKepegawaian||'-')}</td><td class="num">${formatRupiah(e.jumlah)}</td></tr>`;
+  });
   table.innerHTML = html;
-  document.getElementById('previewSummary').textContent = `${employees.length} pegawai ditemukan · Total TPP: ${formatRupiah(total)}`;
+  document.getElementById('previewSummary').textContent =
+    `${employees.length} pegawai ditemukan · ${parsedPreview ? parsedPreview.status : '-'} · Total TPP: ${formatRupiah(total)}`;
   document.getElementById('previewWrap').style.display = 'block';
+}
+
+function escapeHtml(v){
+  return String(v==null?'':v).replace(/[&<>"']/g, m => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'
+  }[m]));
 }
 
 function batalPreview(){
   parsedPreview = null;
   document.getElementById('previewWrap').style.display='none';
+  document.getElementById('detectedBox').style.display='none';
+  document.getElementById('validationBox').style.display='none';
 }
 
 async function publikasikan(){
   if(!parsedPreview) return;
-  const okBox = document.getElementById('uploadOkMsg');
+
   const errBox = document.getElementById('uploadErrMsg');
+  const okBox = document.getElementById('uploadOkMsg');
   errBox.style.display='none';
   okBox.style.display='none';
 
+  const issues = validateEmployees(parsedPreview.employees);
+  if(issues.length){
+    errBox.textContent='Publikasi diblokir: data belum lolos validasi.';
+    errBox.style.display='block';
+    return;
+  }
+
   try{
-    if(!auth.currentUser){
-      throw new Error('ADMIN_NOT_AUTHENTICATED');
-    }
+    // Ambil data existing agar upload PNS tidak menghapus P3K, dan sebaliknya.
+    const existingDoc = await db.collection('tpp').doc('current').get();
+    const existing = existingDoc.exists ? (existingDoc.data().employees || []) : [];
 
-    const button = document.querySelector('#previewWrap .btn-row button:last-child');
-    if(button){ button.disabled = true; button.textContent = 'Menyimpan…'; }
+    const existingNormalized = existing.map(e=>({
+      ...e,
+      statusKepegawaian:e.statusKepegawaian || 'PNS',
+      nip:normalizeNip(e.nip)
+    }));
 
-    await firestoreSaveCurrent({
+    const targetStatus = parsedPreview.status;
+    const targetNips = new Set(parsedPreview.employees.map(e=>normalizeNip(e.nip)));
+
+    // Buang hanya kelompok status yang sedang diunggah.
+    // NIP target juga selalu diganti agar re-upload menjadi idempotent.
+    const keep = existingNormalized.filter(e =>
+      e.statusKepegawaian !== targetStatus && !targetNips.has(normalizeNip(e.nip))
+    );
+
+    const merged = [...keep, ...parsedPreview.employees];
+
+    await db.collection('tpp').doc('current').set({
       periode: parsedPreview.periode,
-      employees: parsedPreview.employees
+      employees: merged,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     });
 
-    okBox.textContent = "Berhasil dipublikasikan. Semua pegawai kini melihat data periode " + parsedPreview.periode + ".";
+    okBox.textContent =
+      `Berhasil dipublikasikan. ${parsedPreview.status} ${parsedPreview.employees.length} pegawai tersimpan. ` +
+      `Total seluruh data aktif: ${merged.length} pegawai.`;
     okBox.style.display='block';
+
     document.getElementById('previewWrap').style.display='none';
     document.getElementById('fileInput').value='';
-    parsedPreview = null;
+    document.getElementById('detectedBox').style.display='none';
+    document.getElementById('validationBox').style.display='none';
+    parsedPreview=null;
+
+    // Muat ulang data publik agar status PNS/P3K langsung tersedia.
+    await loadData();
+
   }catch(e){
-    console.error('Gagal menyimpan TPP:', e);
-    if(e.message === 'ADMIN_NOT_AUTHENTICATED'){
-      errBox.textContent = "Sesi admin tidak aktif. Silakan login admin kembali.";
-    }else if(String(e.message).includes('403')){
-      errBox.textContent = "Akses ditolak Firestore. Pastikan UID akun admin ini sesuai dengan Rules yang sudah dipasang.";
-    }else{
-      errBox.textContent = "Gagal menyimpan ke database: " + (e.message || 'Kesalahan tidak diketahui.');
-    }
+    console.error(e);
+    errBox.textContent = "Gagal menyimpan ke database. Periksa koneksi internet dan Firestore Rules.";
     errBox.style.display='block';
-  }finally{
-    const button = document.querySelector('#previewWrap .btn-row button:last-child');
-    if(button){ button.disabled = false; button.textContent = 'Simpan & Publikasikan'; }
   }
 }
 
 loadData();
+
 </script>
 
 </body>
