@@ -199,7 +199,7 @@
 
 <script>
 /* =======================================================
-   GANTI BAGIAN INI dengan Firebase Config dari project Anda
+   Konfigurasi Firebase project Disnakertrans
    (Firebase Console > Project settings > Your apps > SDK setup)
    ======================================================= */
 const firebaseConfig = {
@@ -213,7 +213,96 @@ const firebaseConfig = {
 
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
-const db = firebase.firestore();
+
+// Firestore Anda memakai named database, bukan database (default).
+// Firebase Web SDK compat yang dipakai aplikasi ini mengarah ke (default),
+// sehingga akses Firestore dilakukan melalui REST API dengan Firebase ID token.
+const FIRESTORE_DATABASE_ID = "tppdisnaker";
+const FIRESTORE_REST_BASE =
+  `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${FIRESTORE_DATABASE_ID}/documents/tpp/current`;
+
+function firestoreValueToJs(value){
+  if(!value) return null;
+  if(Object.prototype.hasOwnProperty.call(value, 'nullValue')) return null;
+  if(Object.prototype.hasOwnProperty.call(value, 'booleanValue')) return value.booleanValue;
+  if(Object.prototype.hasOwnProperty.call(value, 'stringValue')) return value.stringValue;
+  if(Object.prototype.hasOwnProperty.call(value, 'integerValue')) return Number(value.integerValue);
+  if(Object.prototype.hasOwnProperty.call(value, 'doubleValue')) return Number(value.doubleValue);
+  if(Object.prototype.hasOwnProperty.call(value, 'timestampValue')) return value.timestampValue;
+  if(Object.prototype.hasOwnProperty.call(value, 'arrayValue')){
+    return (value.arrayValue.values || []).map(firestoreValueToJs);
+  }
+  if(Object.prototype.hasOwnProperty.call(value, 'mapValue')){
+    const out = {};
+    const fields = value.mapValue.fields || {};
+    Object.keys(fields).forEach(k => out[k] = firestoreValueToJs(fields[k]));
+    return out;
+  }
+  return null;
+}
+
+function jsToFirestoreValue(value){
+  if(value === null) return {nullValue: null};
+  if(Array.isArray(value)){
+    return {arrayValue:{values:value.map(jsToFirestoreValue)}};
+  }
+  if(typeof value === 'boolean') return {booleanValue:value};
+  if(typeof value === 'number') return Number.isInteger(value)
+    ? {integerValue:String(value)}
+    : {doubleValue:value};
+  if(typeof value === 'string') return {stringValue:value};
+  if(typeof value === 'object'){
+    const fields = {};
+    Object.keys(value).forEach(k => fields[k] = jsToFirestoreValue(value[k]));
+    return {mapValue:{fields}};
+  }
+  return {nullValue:null};
+}
+
+async function firestoreGetCurrent(){
+  const response = await fetch(FIRESTORE_REST_BASE, {
+    method:'GET',
+    headers:{'Accept':'application/json'}
+  });
+  if(response.status === 404) return null;
+  if(!response.ok){
+    let detail = '';
+    try{ detail = await response.text(); }catch(_){}
+    throw new Error(`Firestore GET ${response.status}: ${detail || response.statusText}`);
+  }
+  const doc = await response.json();
+  const fields = doc.fields || {};
+  const data = {};
+  Object.keys(fields).forEach(k => data[k] = firestoreValueToJs(fields[k]));
+  return data;
+}
+
+async function firestoreSaveCurrent(data){
+  const user = auth.currentUser;
+  if(!user) throw new Error('ADMIN_NOT_AUTHENTICATED');
+  const idToken = await user.getIdToken(true);
+  const body = {
+    fields: {
+      periode: jsToFirestoreValue(data.periode),
+      employees: jsToFirestoreValue(data.employees),
+      updatedAt: {timestampValue:new Date().toISOString()}
+    }
+  };
+  const response = await fetch(FIRESTORE_REST_BASE, {
+    method:'PATCH',
+    headers:{
+      'Content-Type':'application/json',
+      'Authorization':`Bearer ${idToken}`
+    },
+    body:JSON.stringify(body)
+  });
+  if(!response.ok){
+    let detail = '';
+    try{ detail = await response.text(); }catch(_){}
+    throw new Error(`Firestore PATCH ${response.status}: ${detail || response.statusText}`);
+  }
+  return response.json();
+}
 
 let currentEmployees = [];
 let parsedPreview = null;
@@ -233,18 +322,19 @@ function showOnly(id){
 async function loadData(){
   showOnly('loadingBox');
   try{
-    const doc = await db.collection('tpp').doc('current').get();
-    if(doc.exists && doc.data().employees && doc.data().employees.length){
-      const data = doc.data();
+    const data = await firestoreGetCurrent();
+    if(data && Array.isArray(data.employees) && data.employees.length){
       currentEmployees = data.employees;
       document.getElementById('periodeNote').textContent = "Data periode " + (data.periode || "-") + ". Aplikasi ini terhubung ke database aman — hanya rincian TPP Anda sendiri yang ditampilkan.";
       document.getElementById('slipPeriode').textContent = "Rincian TPP — " + (data.periode || "-");
       showOnly('loginCard');
     } else {
+      currentEmployees = [];
       showOnly('noDataCard');
     }
   }catch(e){
-    console.error(e);
+    console.error('Gagal memuat Firestore:', e);
+    currentEmployees = [];
     showOnly('noDataCard');
   }
 }
@@ -371,25 +461,45 @@ function batalPreview(){
   document.getElementById('previewWrap').style.display='none';
 }
 
-function publikasikan(){
+async function publikasikan(){
   if(!parsedPreview) return;
   const okBox = document.getElementById('uploadOkMsg');
   const errBox = document.getElementById('uploadErrMsg');
-  db.collection('tpp').doc('current').set({
-    periode: parsedPreview.periode,
-    employees: parsedPreview.employees,
-    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-  }).then(()=>{
+  errBox.style.display='none';
+  okBox.style.display='none';
+
+  try{
+    if(!auth.currentUser){
+      throw new Error('ADMIN_NOT_AUTHENTICATED');
+    }
+
+    const button = document.querySelector('#previewWrap .btn-row button:last-child');
+    if(button){ button.disabled = true; button.textContent = 'Menyimpan…'; }
+
+    await firestoreSaveCurrent({
+      periode: parsedPreview.periode,
+      employees: parsedPreview.employees
+    });
+
     okBox.textContent = "Berhasil dipublikasikan. Semua pegawai kini melihat data periode " + parsedPreview.periode + ".";
     okBox.style.display='block';
     document.getElementById('previewWrap').style.display='none';
     document.getElementById('fileInput').value='';
     parsedPreview = null;
-  }).catch(e=>{
-    console.error(e);
-    errBox.textContent = "Gagal menyimpan ke database. Periksa koneksi internet Anda.";
+  }catch(e){
+    console.error('Gagal menyimpan TPP:', e);
+    if(e.message === 'ADMIN_NOT_AUTHENTICATED'){
+      errBox.textContent = "Sesi admin tidak aktif. Silakan login admin kembali.";
+    }else if(String(e.message).includes('403')){
+      errBox.textContent = "Akses ditolak Firestore. Pastikan UID akun admin ini sesuai dengan Rules yang sudah dipasang.";
+    }else{
+      errBox.textContent = "Gagal menyimpan ke database: " + (e.message || 'Kesalahan tidak diketahui.');
+    }
     errBox.style.display='block';
-  });
+  }finally{
+    const button = document.querySelector('#previewWrap .btn-row button:last-child');
+    if(button){ button.disabled = false; button.textContent = 'Simpan & Publikasikan'; }
+  }
 }
 
 loadData();
