@@ -7,10 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 
-<!-- Firebase (gratis, dari Google) -->
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<!-- Firebase Web SDK (modular, mendukung named Firestore database) -->
 <!-- SheetJS, untuk membaca file Excel/CSV yang diupload admin -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- PDF.js, untuk membaca PDF TPP langsung di browser admin -->
@@ -224,7 +221,11 @@
 
 </main>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+
 /* =======================================================
    GANTI BAGIAN INI dengan Firebase Config dari project Anda
    (Firebase Console > Project settings > Your apps > SDK setup)
@@ -238,9 +239,12 @@ const firebaseConfig = {
   appId: "1:107230672547:web:064b988639473f83e77116"
 };
 
-firebase.initializeApp(firebaseConfig);
-const auth = firebase.auth();
-const db = firebase.firestore();
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+
+// PENTING: data TPP berada pada named Firestore database "tppdisnaker",
+// bukan database "(default)".
+const db = getFirestore(app, "tppdisnaker");
 
 let currentEmployees = [];
 let parsedPreview = null;
@@ -260,7 +264,7 @@ function showOnly(id){
 async function loadData(){
   showOnly('loadingBox');
   try{
-    const doc = await db.collection('tpp').doc('current').get();
+    const snap = await getDoc(doc(db, 'tpp', 'current'));
     if(doc.exists && doc.data().employees && doc.data().employees.length){
       const data = doc.data();
       currentEmployees = (data.employees || []).map(e => ({
@@ -326,13 +330,13 @@ function doAdminLogin(){
   const pass = document.getElementById('adminPass').value;
   const err = document.getElementById('adminErrMsg');
   err.style.display='none';
-  auth.signInWithEmailAndPassword(email, pass)
+  signInWithEmailAndPassword(auth, email, pass)
     .then(()=>{ showOnly('adminPanel'); })
     .catch((e)=>{ err.textContent = "Login gagal: email atau kata sandi salah."; err.style.display='block'; });
 }
 
 function doAdminLogout(){
-  auth.signOut().then(loadData);
+  signOut(auth).then(loadData);
 }
 
 /* ---------- PDF / Excel / CSV parser ---------- */
@@ -741,8 +745,8 @@ async function publikasikan(){
 
   try{
     // Ambil data existing agar upload PNS tidak menghapus P3K, dan sebaliknya.
-    const existingDoc = await db.collection('tpp').doc('current').get();
-    const existing = existingDoc.exists ? (existingDoc.data().employees || []) : [];
+    const existingSnap = await getDoc(doc(db, 'tpp', 'current'));
+    const existing = existingSnap.exists() ? (existingSnap.data().employees || []) : [];
 
     const existingNormalized = existing.map(e=>({
       ...e,
@@ -761,10 +765,10 @@ async function publikasikan(){
 
     const merged = [...keep, ...parsedPreview.employees];
 
-    await db.collection('tpp').doc('current').set({
+    await setDoc(doc(db, 'tpp', 'current'), {
       periode: parsedPreview.periode,
       employees: merged,
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      updatedAt: serverTimestamp()
     });
 
     okBox.textContent =
