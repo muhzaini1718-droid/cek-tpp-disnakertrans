@@ -221,6 +221,10 @@ const FIRESTORE_DATABASE_ID = "tppdisnaker";
 const FIRESTORE_REST_BASE =
   `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${FIRESTORE_DATABASE_ID}/documents/tpp/current`;
 
+function normalizeNip(value){
+  return String(value ?? '').trim().replace(/[^0-9]/g, '');
+}
+
 function firestoreValueToJs(value){
   if(!value) return null;
   if(Object.prototype.hasOwnProperty.call(value, 'nullValue')) return null;
@@ -260,8 +264,9 @@ function jsToFirestoreValue(value){
 }
 
 async function firestoreGetCurrent(){
-  const response = await fetch(FIRESTORE_REST_BASE, {
+  const response = await fetch(FIRESTORE_REST_BASE + '?_=' + Date.now(), {
     method:'GET',
+    cache:'no-store',
     headers:{'Accept':'application/json'}
   });
   if(response.status === 404) return null;
@@ -341,14 +346,14 @@ async function loadData(){
 
 /* ---------- Login pegawai ---------- */
 function doLogin(){
-  const nip = document.getElementById('nipInput').value.trim();
+  const nip = normalizeNip(document.getElementById('nipInput').value);
   const tgl = document.getElementById('tglInput').value;
   const errBox = document.getElementById('errMsg');
   errBox.style.display = 'none';
 
   if(!nip || !tgl){ errBox.textContent = "Mohon isi NIP dan tanggal lahir."; errBox.style.display='block'; return; }
 
-  const p = currentEmployees.find(x => String(x.nip).trim() === nip);
+  const p = currentEmployees.find(x => normalizeNip(x.nip) === nip);
   if(!p){ errBox.textContent = "NIP tidak ditemukan dalam data TPP periode ini."; errBox.style.display='block'; return; }
 
   const nipBirth = String(p.nip).trim().substring(0,8);
@@ -410,7 +415,7 @@ function prosesFile(){
     try{
       const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
       const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, {defval:0});
+      const rows = XLSX.utils.sheet_to_json(ws, {defval:'', raw:false});
 
       const employees = rows.map(r=>{
         const get = (key)=>{
@@ -425,7 +430,7 @@ function prosesFile(){
         const lain = Number(get('lain'))||0;
         return {
           nama: String(get('nama')||'').trim(),
-          nip: String(get('nip')||'').trim(),
+          nip: normalizeNip(get('nip')),
           jabatan: String(get('jabatan')||'').trim(),
           kelas: get('kelas')||'',
           prestasi, beban, tempat, kondisi, langka, lain,
