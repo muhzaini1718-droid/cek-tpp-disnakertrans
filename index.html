@@ -418,16 +418,17 @@ async function parsePdfFile(file){
 
     for(let i=0;i<nipItems.length;i++){
       const nipItem = nipItems[i];
-      const prevY = i>0 ? nipItems[i-1].y : nipItem.y - 15;
-      const nextY = i<nipItems.length-1 ? nipItems[i+1].y : nipItem.y + 15;
-
-      const top = (prevY + nipItem.y) / 2;
-      const bottom = (nipItem.y + nextY) / 2;
-      const band = items.filter(x => x.y >= top && x.y < bottom);
+      // Batasi pita baris di sekitar NIP. Ini penting untuk baris terakhir agar
+      // footer/tanda tangan tidak ikut terbaca sebagai bagian pegawai.
+      const rowHalfHeight = 12;
+      const top = nipItem.y - rowHalfHeight;
+      const bottom = nipItem.y + rowHalfHeight;
+      const band = items.filter(x => x.y >= top && x.y <= bottom);
 
       const nip = normalizeNip(nipItem.text);
 
-      // Find class jabatan: angka 1-20 setelah posisi NIP.
+      // Cari kelas jabatan secara dinamis. Layout PDF PNS dan P3K sedikit bergeser,
+      // sehingga zona X tetap tidak aman untuk keduanya.
       const classCandidates = band
         .filter(x => x.x > nipItem.x + 40 && /^\d{1,2}$/.test(x.text))
         .map(x => ({...x, value:Number(x.text)}))
@@ -437,16 +438,18 @@ async function parsePdfFile(file){
       const classItem = classCandidates[0];
       if(!classItem) continue;
 
-      // Ambil token pembayaran setelah kelas. Format PDF kantor memakai titik ribuan atau "-".
+      // Setelah kelas, kolom pembayaran selalu berurutan:
+      // Prestasi, Beban, Tempat, Kondisi, Kelangkaan, Pertimbangan/Lainnya, Jumlah.
+      // Ambil berdasarkan urutan X, bukan posisi X absolut. Ini membuat parser tahan
+      // terhadap pergeseran layout antara laporan PNS dan P3K.
       const paymentTokens = band
         .filter(x => x.x > classItem.x + 12)
         .filter(x => /^-?$|^\d[\d.]*$/.test(x.text))
         .sort((a,b)=>a.x-b.x);
 
-      const vals = paymentTokens.map(x=>moneyValue(x.text));
-      if(vals.length < 7) continue;
+      if(paymentTokens.length < 7) continue;
 
-      const amounts = vals.slice(0,7);
+      const amounts = paymentTokens.slice(0,7).map(x=>moneyValue(x.text));
 
       // Kolom nama berada di kiri NIP; jabatan berada di antara NIP dan kelas.
       const nameItems = band
