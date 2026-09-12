@@ -265,8 +265,8 @@ async function loadData(){
   showOnly('loadingBox');
   try{
     const snap = await getDoc(doc(db, 'tpp', 'current'));
-    if(doc.exists && doc.data().employees && doc.data().employees.length){
-      const data = doc.data();
+    if(snap.exists() && snap.data().employees && snap.data().employees.length){
+      const data = snap.data();
       currentEmployees = (data.employees || []).map(e => ({
         ...e,
         statusKepegawaian: e.statusKepegawaian || "PNS"
@@ -338,6 +338,15 @@ function doAdminLogin(){
 function doAdminLogout(){
   signOut(auth).then(loadData);
 }
+
+// Fungsi dipanggil oleh onclick HTML, jadi harus diekspos ke window.
+// Karena kode Firebase memakai <script type="module">, fungsi tidak otomatis global.
+window.showAdminLogin = showAdminLogin;
+window.showEmployeeLogin = showEmployeeLogin;
+window.doLogin = doLogin;
+window.doLogout = doLogout;
+window.doAdminLogin = doAdminLogin;
+window.doAdminLogout = doAdminLogout;
 
 /* ---------- PDF / Excel / CSV parser ---------- */
 if(window.pdfjsLib){
@@ -721,6 +730,48 @@ function escapeHtml(v){
   }[m]));
 }
 
+function normalizePeriodKey(period){
+  return String(period || '').trim().replace(/\s+/g,' ').toLowerCase();
+}
+
+/*
+  Menjaga hanya SATU periode aktif di database.
+  - Periode sama: gabungkan PNS + P3K, tetapi re-upload hanya mengganti kelompok status yang diunggah.
+  - Periode berbeda: periode lama tidak boleh bercampur; seluruh data aktif diganti dengan periode baru setelah konfirmasi admin.
+*/
+function mergeActiveEmployees(existingEmployees, existingPeriod, incomingEmployees, incomingPeriod, confirmFn){
+  const oldKey = normalizePeriodKey(existingPeriod);
+  const newKey = normalizePeriodKey(incomingPeriod);
+  const incoming = Array.isArray(incomingEmployees) ? incomingEmployees : [];
+
+  if(oldKey && newKey && oldKey !== newKey){
+    const ask = confirmFn || ((message) => window.confirm(message));
+    const proceed = ask(
+      `Periode aktif saat ini adalah ${existingPeriod}.\n\n` +
+      `Anda akan menggantinya menjadi ${incomingPeriod}.\n` +
+      `Data PNS/P3K dari periode lama tidak akan dibawa ke periode baru.\n\n` +
+      `Lanjutkan?`
+    );
+    if(!proceed) return null;
+    return incoming.map(e => ({...e, nip:normalizeNip(e.nip)}));
+  }
+
+  const existing = (Array.isArray(existingEmployees) ? existingEmployees : []).map(e => ({
+    ...e,
+    statusKepegawaian:e.statusKepegawaian || 'PNS',
+    nip:normalizeNip(e.nip)
+  }));
+
+  const targetStatus = incoming[0]?.statusKepegawaian || '';
+  const targetNips = new Set(incoming.map(e=>normalizeNip(e.nip)));
+
+  const keep = existing.filter(e =>
+    e.statusKepegawaian !== targetStatus && !targetNips.has(normalizeNip(e.nip))
+  );
+
+  return [...keep, ...incoming.map(e => ({...e, nip:normalizeNip(e.nip)}))];
+}
+
 function batalPreview(){
   parsedPreview = null;
   document.getElementById('previewWrap').style.display='none';
@@ -744,26 +795,21 @@ async function publikasikan(){
   }
 
   try{
-    // Ambil data existing agar upload PNS tidak menghapus P3K, dan sebaliknya.
+    // Dokumen current hanya menyimpan SATU periode aktif.
+    // Jika periodenya sama, PNS dan P3K digabung.
+    // Jika periodenya berubah, data periode lama diganti seluruhnya setelah konfirmasi admin.
     const existingSnap = await getDoc(doc(db, 'tpp', 'current'));
-    const existing = existingSnap.exists() ? (existingSnap.data().employees || []) : [];
-
-    const existingNormalized = existing.map(e=>({
-      ...e,
-      statusKepegawaian:e.statusKepegawaian || 'PNS',
-      nip:normalizeNip(e.nip)
-    }));
-
-    const targetStatus = parsedPreview.status;
-    const targetNips = new Set(parsedPreview.employees.map(e=>normalizeNip(e.nip)));
-
-    // Buang hanya kelompok status yang sedang diunggah.
-    // NIP target juga selalu diganti agar re-upload menjadi idempotent.
-    const keep = existingNormalized.filter(e =>
-      e.statusKepegawaian !== targetStatus && !targetNips.has(normalizeNip(e.nip))
+    const existingData = existingSnap.exists() ? existingSnap.data() : {};
+    const merged = mergeActiveEmployees(
+      existingData.employees || [],
+      existingData.periode || '',
+      parsedPreview.employees,
+      parsedPreview.periode
     );
 
-    const merged = [...keep, ...parsedPreview.employees];
+    if(merged === null){
+      return;
+    }
 
     await setDoc(doc(db, 'tpp', 'current'), {
       periode: parsedPreview.periode,
@@ -791,6 +837,11 @@ async function publikasikan(){
     errBox.style.display='block';
   }
 }
+
+// Ekspos handler untuk atribut onclick pada HTML.
+window.prosesFile = prosesFile;
+window.batalPreview = batalPreview;
+window.publikasikan = publikasikan;
 
 loadData();
 
