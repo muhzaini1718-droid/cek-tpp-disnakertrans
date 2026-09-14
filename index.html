@@ -7,7 +7,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 
-<!-- Firebase Web SDK (modular, mendukung named Firestore database) -->
+<!-- Firebase (gratis, dari Google) -->
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <!-- SheetJS, untuk membaca file Excel/CSV yang diupload admin -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- PDF.js, untuk membaca PDF TPP langsung di browser admin -->
@@ -90,6 +93,13 @@
   .validation-box.ok{background:#e9f3ee;border-color:#a9d1bb;color:var(--green);}
   .validation-box.warn{background:#fff5df;border-color:#e2c37b;color:#76580a;}
   .validation-box.bad{background:#fbeae6;border-color:#e3b6a8;color:var(--red);}
+  .history-picker{display:grid;grid-template-columns:1fr 1.35fr;gap:10px;}
+  .history-picker select{width:100%;padding:11px 12px;border:1px solid #c7c1ae;border-radius:2px;font-size:14px;background:var(--paper-2);color:var(--ink);}
+  .history-summary{margin-top:12px;padding:12px 14px;background:#f4f7f5;border-left:3px solid var(--green);font-size:12.5px;color:var(--slate);line-height:1.5;}
+  .history-list{margin-top:16px;border-top:1px solid var(--line);}
+  .history-item{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:12.5px;}
+  .history-item strong{color:var(--navy);}
+  .history-item span{font-family:'IBM Plex Mono',monospace;color:var(--slate);}
 </style>
 </head>
 <body>
@@ -118,8 +128,18 @@
       <input type="date" id="tglInput">
       <div class="hint">Tanggal lahir digunakan sebagai verifikasi, sesuai 8 digit pertama NIP Anda.</div>
     </div>
+    <div class="field">
+      <label>Periode TPP</label>
+      <div class="history-picker">
+        <select id="tahunInput" onchange="populateMonths()" aria-label="Tahun TPP"></select>
+        <select id="bulanInput" aria-label="Bulan TPP"></select>
+      </div>
+      <div class="hint">Pilih tahun dan bulan untuk melihat riwayat TPP Anda. Data bulan sebelumnya tetap tersimpan dan tidak tertimpa saat bulan baru dipublikasikan.</div>
+    </div>
     <button onclick="doLogin()">Lihat TPP Saya</button>
     <div class="note-box" id="periodeNote">Data periode —</div>
+    <div class="history-summary" id="historySummary" style="display:none;"></div>
+    <div class="history-summary" id="yearHistory" style="display:none;"></div>
     <div class="link-row"><a onclick="showAdminLogin()">Login sebagai Admin</a></div>
   </div>
 
@@ -153,7 +173,8 @@
     </div>
     <div class="total-row"><span class="t-label">Jumlah TPP</span><span class="t-val" id="oJumlah"></span></div>
     <div class="slip-footer">
-      <button class="secondary" onclick="doLogout()">Keluar</button>
+      <button class="secondary" onclick="backToHistory()">← Pilih Periode Lain</button>
+      <button class="secondary" onclick="doLogout()" style="margin-top:8px;">Keluar</button>
       <div class="periode">Kepala Dinas Ketenagakerjaan dan Transmigrasi</div>
     </div>
   </div>
@@ -221,11 +242,7 @@
 
 </main>
 
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
-
+<script>
 /* =======================================================
    GANTI BAGIAN INI dengan Firebase Config dari project Anda
    (Firebase Console > Project settings > Your apps > SDK setup)
@@ -239,12 +256,9 @@ const firebaseConfig = {
   appId: "1:107230672547:web:064b988639473f83e77116"
 };
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-
-// PENTING: data TPP berada pada named Firestore database "tppdisnaker",
-// bukan database "(default)".
-const db = getFirestore(app, "tppdisnaker");
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
 
 let currentEmployees = [];
 let parsedPreview = null;
@@ -260,19 +274,84 @@ function showOnly(id){
   });
 }
 
-/* ---------- Load data untuk pegawai ---------- */
+/* ---------- Riwayat TPP ---------- */
+let availablePeriods = [];
+let currentEmployee = null;
+let currentPeriod = null;
+
+const MONTHS_ID = [
+  'Januari','Februari','Maret','April','Mei','Juni',
+  'Juli','Agustus','September','Oktober','November','Desember'
+];
+
+function periodParts(periodKey){
+  const m = String(periodKey||'').match(/^(\d{4})-(\d{2})$/);
+  return m ? {year:m[1], month:m[2]} : null;
+}
+
+function periodKeyFromText(text){
+  const t = String(text||'').trim().toLowerCase();
+  const months = MONTHS_ID.map(x=>x.toLowerCase());
+  const m = months.findIndex(x=>t.includes(x));
+  const y = t.match(/20\d{2}/);
+  return (m>=0 && y) ? `${y[0]}-${String(m+1).padStart(2,'0')}` : '';
+}
+
+function periodLabel(key, fallback=''){
+  const p = periodParts(key);
+  if(!p) return fallback || key || '-';
+  return `${MONTHS_ID[Number(p.month)-1]} ${p.year}`;
+}
+
+async function historyAccessKey(nip,tglInput){
+  const compact=String(tglInput||'').replace(/-/g,'');
+  const source=`${String(nip||'').trim()}:${compact}`;
+  const bytes=new TextEncoder().encode(source);
+  const digest=await crypto.subtle.digest('SHA-256',bytes);
+  return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+async function loadHistoryPeriods(){
+  const snap = await db.collection('tpp_periods').orderBy('periodKey','desc').get();
+  availablePeriods = snap.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.periodKey);
+  if(!availablePeriods.length){
+    // Backward compatibility: gunakan current bila history belum pernah dipublikasikan.
+    const cur = await db.collection('tpp').doc('current').get();
+    if(cur.exists && cur.data().periode){
+      const key = periodKeyFromText(cur.data().periode);
+      if(key) availablePeriods=[{id:key,periodKey:key,periode:cur.data().periode,count:Number((cur.data().employees||[]).length)}];
+    }
+  }
+  populateYears();
+}
+
+function populateYears(){
+  const y = document.getElementById('tahunInput');
+  const years = [...new Set(availablePeriods.map(x=>periodParts(x.periodKey)?.year).filter(Boolean))];
+  y.innerHTML = years.length ? years.map(v=>`<option value="${v}">${v}</option>`).join('') : '<option value="">-</option>';
+  populateMonths();
+}
+
+function populateMonths(){
+  const y = document.getElementById('tahunInput').value;
+  const m = document.getElementById('bulanInput');
+  const periods = availablePeriods.filter(x=>periodParts(x.periodKey)?.year===y).sort((a,b)=>b.periodKey.localeCompare(a.periodKey));
+  m.innerHTML = periods.length ? periods.map(x=>{const p=periodParts(x.periodKey);return `<option value="${x.periodKey}">${periodLabel(x.periodKey,x.periode||'')}</option>`}).join('') : '<option value="">Belum tersedia</option>';
+}
+
 async function loadData(){
   showOnly('loadingBox');
   try{
-    const snap = await getDoc(doc(db, 'tpp', 'current'));
-    if(snap.exists() && snap.data().employees && snap.data().employees.length){
-      const data = snap.data();
-      currentEmployees = (data.employees || []).map(e => ({
-        ...e,
-        statusKepegawaian: e.statusKepegawaian || "PNS"
-      }));
-      document.getElementById('periodeNote').textContent = "Data periode " + (data.periode || "-") + ". Aplikasi terhubung ke database aman — hanya rincian TPP Anda sendiri yang ditampilkan.";
-      document.getElementById('slipPeriode').textContent = "Rincian TPP — " + (data.periode || "-");
+    await loadHistoryPeriods();
+    if(availablePeriods.length){
+      const latest=availablePeriods[0];
+      const y=periodParts(latest.periodKey)?.year;
+      if(y) document.getElementById('tahunInput').value=y;
+      populateMonths();
+      document.getElementById('bulanInput').value=latest.periodKey;
+      document.getElementById('periodeNote').textContent = `Riwayat TPP tersedia: ${availablePeriods.length} periode. Pilih tahun dan bulan untuk melihat rincian Anda.`;
+      document.getElementById('historySummary').style.display='block';
+      document.getElementById('historySummary').textContent = `Periode terbaru: ${periodLabel(latest.periodKey,latest.periode||'')}. Data hanya akan menampilkan rincian pegawai yang berhasil diverifikasi.`;
       showOnly('loginCard');
     } else {
       showOnly('noDataCard');
@@ -283,42 +362,103 @@ async function loadData(){
   }
 }
 
-/* ---------- Login pegawai ---------- */
-function doLogin(){
+/* ---------- Login pegawai + riwayat ---------- */
+async function doLogin(){
   const nip = document.getElementById('nipInput').value.trim();
   const tgl = document.getElementById('tglInput').value;
+  const periodKey = document.getElementById('bulanInput').value;
   const errBox = document.getElementById('errMsg');
   errBox.style.display = 'none';
 
-  if(!nip || !tgl){ errBox.textContent = "Mohon isi NIP dan tanggal lahir."; errBox.style.display='block'; return; }
+  if(!nip || !tgl || !periodKey){ errBox.textContent = 'Mohon isi NIP, tanggal lahir, serta pilih periode TPP.'; errBox.style.display='block'; return; }
 
-  const p = currentEmployees.find(x => String(x.nip).trim() === nip);
-  if(!p){ errBox.textContent = "NIP tidak ditemukan dalam data TPP periode ini."; errBox.style.display='block'; return; }
+  try{
+    const accessKey=await historyAccessKey(nip,tgl);
+    const historyDoc=await db.collection('tpp_history').doc(periodKey).collection('employees').doc(accessKey).get();
+    let p=historyDoc.exists ? {...historyDoc.data(),statusKepegawaian:historyDoc.data().statusKepegawaian||'PNS'} : null;
+    let periode=periodLabel(periodKey);
 
-  const nipBirth = String(p.nip).trim().substring(0,8);
-  const inputBirth = tgl.replace(/-/g,'');
-  if(nipBirth !== inputBirth){ errBox.textContent = "Tanggal lahir tidak sesuai dengan NIP. Periksa kembali."; errBox.style.display='block'; return; }
+    if(p){
+      const nipBirth=String(p.nip).trim().substring(0,8);
+      const inputBirth=tgl.replace(/-/g,'');
+      if(nipBirth!==inputBirth){ p=null; }
+      else periode=p.periode||periode;
+    }
 
-  document.getElementById('oNama').textContent = p.nama;
-  document.getElementById('oJabatan').textContent = p.jabatan;
-  document.getElementById('oNip').textContent = p.nip;
-  document.getElementById('oStatus').textContent = p.statusKepegawaian || "PNS";
-  document.getElementById('oKelas').textContent = p.kelas;
-  document.getElementById('oPrestasi').textContent = formatRupiah(p.prestasi);
-  document.getElementById('oBeban').textContent = formatRupiah(p.beban);
-  document.getElementById('oTempat').textContent = formatRupiah(p.tempat);
-  document.getElementById('oKondisi').textContent = formatRupiah(p.kondisi);
-  document.getElementById('oLangka').textContent = formatRupiah(p.langka);
-  document.getElementById('oLain').textContent = formatRupiah(p.lain);
-  document.getElementById('oJumlah').textContent = formatRupiah(p.jumlah);
-  showOnly('slipCard');
+    if(!p){
+      errBox.textContent='NIP atau tanggal lahir tidak sesuai, atau data TPP tidak tersedia pada periode yang dipilih.';
+      errBox.style.display='block';
+      return;
+    }
+
+    currentEmployee=p;
+    currentPeriod={periodKey,periode};
+    renderEmployeeSlip(p,currentPeriod.periode);
+    showOnly('slipCard');
+  }catch(e){
+    console.error(e);
+    errBox.textContent='Gagal mengambil riwayat TPP. Periksa koneksi internet dan Firestore Rules.';
+    errBox.style.display='block';
+  }
+}
+
+function renderEmployeeSlip(p,periode){
+  document.getElementById('oNama').textContent=p.nama;
+  document.getElementById('oJabatan').textContent=p.jabatan;
+  document.getElementById('oNip').textContent=p.nip;
+  document.getElementById('oStatus').textContent=p.statusKepegawaian||'PNS';
+  document.getElementById('oKelas').textContent=p.kelas||'-';
+  document.getElementById('oPrestasi').textContent=formatRupiah(p.prestasi);
+  document.getElementById('oBeban').textContent=formatRupiah(p.beban);
+  document.getElementById('oTempat').textContent=formatRupiah(p.tempat);
+  document.getElementById('oKondisi').textContent=formatRupiah(p.kondisi);
+  document.getElementById('oLangka').textContent=formatRupiah(p.langka);
+  document.getElementById('oLain').textContent=formatRupiah(p.lain);
+  document.getElementById('oJumlah').textContent=formatRupiah(p.jumlah);
+  document.getElementById('slipPeriode').textContent='Rincian TPP — '+periode;
+  document.getElementById('historySummary').style.display='none';
+  loadAnnualHistory(p.nip, currentPeriod?.periodKey || '');
+}
+
+async function loadAnnualHistory(nip, selectedKey){
+  const box=document.getElementById('yearHistory');
+  box.style.display='block';
+  box.innerHTML='<strong>Riwayat TPP Tahun Ini</strong><div class="hint">Memuat riwayat…</div>';
+  const year=periodParts(selectedKey)?.year;
+  if(!year){box.innerHTML='<strong>Riwayat TPP</strong>';return;}
+  try{
+    const periods=availablePeriods.filter(x=>periodParts(x.periodKey)?.year===year).sort((a,b)=>b.periodKey.localeCompare(a.periodKey));
+    const rows=[];
+    for(const meta of periods){
+      const accessKey=await historyAccessKey(nip,document.getElementById('tglInput').value);
+      const snap=await db.collection('tpp_history').doc(meta.periodKey).collection('employees').doc(accessKey).get();
+      if(snap.exists){ const e=snap.data(); rows.push(`<div class="history-item"><strong>${periodLabel(meta.periodKey,meta.periode||'')}</strong><span>${formatRupiah(e.jumlah)}</span></div>`); }
+    }
+    box.innerHTML=`<strong>Riwayat TPP ${year}</strong>${rows.length?'<div class="history-list">'+rows.join('')+'</div>':'<div class="hint">Belum ada data riwayat untuk pegawai ini pada tahun tersebut.</div>'}`;
+  }catch(e){
+    console.error(e);
+    box.innerHTML='<strong>Riwayat TPP</strong><div class="hint">Riwayat tahunan belum dapat dimuat.</div>';
+  }
+}
+
+async function backToHistory(){
+  if(currentPeriod){
+    const y=periodParts(currentPeriod.periodKey)?.year;
+    if(y) document.getElementById('tahunInput').value=y;
+    populateMonths();
+    document.getElementById('bulanInput').value=currentPeriod.periodKey;
+  }
+  document.getElementById('historySummary').style.display='block';
+  document.getElementById('yearHistory').style.display='none';
+  showOnly('loginCard');
 }
 
 function doLogout(){
   document.getElementById('nipInput').value='';
   document.getElementById('tglInput').value='';
   document.getElementById('errMsg').style.display='none';
-  showOnly('loginCard');
+  currentEmployee=null; currentPeriod=null;
+  loadData();
 }
 
 /* ---------- Admin ---------- */
@@ -330,23 +470,14 @@ function doAdminLogin(){
   const pass = document.getElementById('adminPass').value;
   const err = document.getElementById('adminErrMsg');
   err.style.display='none';
-  signInWithEmailAndPassword(auth, email, pass)
+  auth.signInWithEmailAndPassword(email, pass)
     .then(()=>{ showOnly('adminPanel'); })
     .catch((e)=>{ err.textContent = "Login gagal: email atau kata sandi salah."; err.style.display='block'; });
 }
 
 function doAdminLogout(){
-  signOut(auth).then(loadData);
+  auth.signOut().then(loadData);
 }
-
-// Fungsi dipanggil oleh onclick HTML, jadi harus diekspos ke window.
-// Karena kode Firebase memakai <script type="module">, fungsi tidak otomatis global.
-window.showAdminLogin = showAdminLogin;
-window.showEmployeeLogin = showEmployeeLogin;
-window.doLogin = doLogin;
-window.doLogout = doLogout;
-window.doAdminLogin = doAdminLogin;
-window.doAdminLogout = doAdminLogout;
 
 /* ---------- PDF / Excel / CSV parser ---------- */
 if(window.pdfjsLib){
@@ -730,48 +861,6 @@ function escapeHtml(v){
   }[m]));
 }
 
-function normalizePeriodKey(period){
-  return String(period || '').trim().replace(/\s+/g,' ').toLowerCase();
-}
-
-/*
-  Menjaga hanya SATU periode aktif di database.
-  - Periode sama: gabungkan PNS + P3K, tetapi re-upload hanya mengganti kelompok status yang diunggah.
-  - Periode berbeda: periode lama tidak boleh bercampur; seluruh data aktif diganti dengan periode baru setelah konfirmasi admin.
-*/
-function mergeActiveEmployees(existingEmployees, existingPeriod, incomingEmployees, incomingPeriod, confirmFn){
-  const oldKey = normalizePeriodKey(existingPeriod);
-  const newKey = normalizePeriodKey(incomingPeriod);
-  const incoming = Array.isArray(incomingEmployees) ? incomingEmployees : [];
-
-  if(oldKey && newKey && oldKey !== newKey){
-    const ask = confirmFn || ((message) => window.confirm(message));
-    const proceed = ask(
-      `Periode aktif saat ini adalah ${existingPeriod}.\n\n` +
-      `Anda akan menggantinya menjadi ${incomingPeriod}.\n` +
-      `Data PNS/P3K dari periode lama tidak akan dibawa ke periode baru.\n\n` +
-      `Lanjutkan?`
-    );
-    if(!proceed) return null;
-    return incoming.map(e => ({...e, nip:normalizeNip(e.nip)}));
-  }
-
-  const existing = (Array.isArray(existingEmployees) ? existingEmployees : []).map(e => ({
-    ...e,
-    statusKepegawaian:e.statusKepegawaian || 'PNS',
-    nip:normalizeNip(e.nip)
-  }));
-
-  const targetStatus = incoming[0]?.statusKepegawaian || '';
-  const targetNips = new Set(incoming.map(e=>normalizeNip(e.nip)));
-
-  const keep = existing.filter(e =>
-    e.statusKepegawaian !== targetStatus && !targetNips.has(normalizeNip(e.nip))
-  );
-
-  return [...keep, ...incoming.map(e => ({...e, nip:normalizeNip(e.nip)}))];
-}
-
 function batalPreview(){
   parsedPreview = null;
   document.getElementById('previewWrap').style.display='none';
@@ -782,12 +871,11 @@ function batalPreview(){
 async function publikasikan(){
   if(!parsedPreview) return;
 
-  const errBox = document.getElementById('uploadErrMsg');
-  const okBox = document.getElementById('uploadOkMsg');
-  errBox.style.display='none';
-  okBox.style.display='none';
+  const errBox=document.getElementById('uploadErrMsg');
+  const okBox=document.getElementById('uploadOkMsg');
+  errBox.style.display='none'; okBox.style.display='none';
 
-  const issues = validateEmployees(parsedPreview.employees);
+  const issues=validateEmployees(parsedPreview.employees);
   if(issues.length){
     errBox.textContent='Publikasi diblokir: data belum lolos validasi.';
     errBox.style.display='block';
@@ -795,53 +883,82 @@ async function publikasikan(){
   }
 
   try{
-    // Dokumen current hanya menyimpan SATU periode aktif.
-    // Jika periodenya sama, PNS dan P3K digabung.
-    // Jika periodenya berubah, data periode lama diganti seluruhnya setelah konfirmasi admin.
-    const existingSnap = await getDoc(doc(db, 'tpp', 'current'));
-    const existingData = existingSnap.exists() ? existingSnap.data() : {};
-    const merged = mergeActiveEmployees(
-      existingData.employees || [],
-      existingData.periode || '',
-      parsedPreview.employees,
-      parsedPreview.periode
-    );
+    const periodKey=periodKeyFromText(parsedPreview.periode);
+    if(!periodKey) throw new Error('Periode harus memuat nama bulan dan tahun, misalnya Agustus 2026.');
 
-    if(merged === null){
-      return;
+    // Baca data aktif agar upload PNS tidak menghapus P3K dan sebaliknya.
+    const existingDoc=await db.collection('tpp').doc('current').get();
+    const existing=existingDoc.exists ? (existingDoc.data().employees||[]) : [];
+    const existingNormalized=existing.map(e=>({...e,statusKepegawaian:e.statusKepegawaian||'PNS',nip:normalizeNip(e.nip)}));
+    const targetStatus=parsedPreview.status;
+    const targetNips=new Set(parsedPreview.employees.map(e=>normalizeNip(e.nip)));
+    const existingPeriodKey=existingDoc.exists ? periodKeyFromText(existingDoc.data().periode) : '';
+
+    // Jika bulan berganti, current dimulai dari kosong. Jika bulan sama, gabungkan PNS/P3K.
+    const base=(existingPeriodKey===periodKey) ? existingNormalized : [];
+    const keep=base.filter(e=>e.statusKepegawaian!==targetStatus && !targetNips.has(normalizeNip(e.nip)));
+    const merged=[...keep,...parsedPreview.employees];
+
+    const historyRef=db.collection('tpp_history').doc(periodKey);
+    const historySnap=await historyRef.get();
+    const historyExistingSnap=await historyRef.collection('employees').get();
+    const historyExisting=historyExistingSnap.docs.map(d=>({id:d.id,...d.data()}));
+    const historyKeep=historyExisting.filter(e=>e.statusKepegawaian!==targetStatus && !targetNips.has(normalizeNip(e.nip)));
+    const historyMerged=[...historyKeep,...parsedPreview.employees];
+
+    // Simpan arsip permanen per bulan. Setiap pegawai berada di dokumen terpisah
+    // dengan ID SHA-256(NIP:tanggal_lahir), sehingga halaman publik tidak perlu
+    // membaca seluruh daftar pegawai untuk memverifikasi satu orang.
+    const oldDocsToDelete=historyExisting.filter(e=>!historyKeep.some(k=>k.id===e.id));
+    const ops=[];
+    for(const old of oldDocsToDelete) ops.push({type:'delete',ref:historyRef.collection('employees').doc(old.id)});
+    for(const e of historyMerged){
+      const birth=String(e.nip||'').trim().substring(0,8);
+      const dateIso=birth.length===8?`${birth.slice(0,4)}-${birth.slice(4,6)}-${birth.slice(6,8)}`:'';
+      const key=await historyAccessKey(e.nip,dateIso);
+      ops.push({type:'set',ref:historyRef.collection('employees').doc(key),data:{...e,periode:parsedPreview.periode,periodKey}});
+    }
+    ops.push({type:'set',ref:historyRef,data:{periodKey,periode:parsedPreview.periode,count:historyMerged.length,updatedAt:firebase.firestore.FieldValue.serverTimestamp()}});
+    for(let i=0;i<ops.length;i+=450){
+      const batch=db.batch();
+      for(const op of ops.slice(i,i+450)){ if(op.type==='delete') batch.delete(op.ref); else batch.set(op.ref,op.data,{merge:true}); }
+      await batch.commit();
     }
 
-    await setDoc(doc(db, 'tpp', 'current'), {
-      periode: parsedPreview.periode,
-      employees: merged,
-      updatedAt: serverTimestamp()
+    const pnsCount=historyMerged.filter(e=>(e.statusKepegawaian||'PNS')==='PNS').length;
+    const p3kCount=historyMerged.filter(e=>(e.statusKepegawaian||'')==='P3K').length;
+    await db.collection('tpp_periods').doc(periodKey).set({
+      periodKey,
+      periode:parsedPreview.periode,
+      year:Number(periodKey.slice(0,4)),
+      month:Number(periodKey.slice(5,7)),
+      count:historyMerged.length,
+      countPNS:pnsCount,
+      countP3K:p3kCount,
+      updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+    },{merge:true});
+
+    await db.collection('tpp').doc('current').set({
+      periode:parsedPreview.periode,
+      periodKey,
+      employees:merged,
+      updatedAt:firebase.firestore.FieldValue.serverTimestamp()
     });
 
-    okBox.textContent =
-      `Berhasil dipublikasikan. ${parsedPreview.status} ${parsedPreview.employees.length} pegawai tersimpan. ` +
-      `Total seluruh data aktif: ${merged.length} pegawai.`;
+    okBox.textContent=`Berhasil dipublikasikan. ${parsedPreview.status} ${parsedPreview.employees.length} pegawai tersimpan pada ${parsedPreview.periode}. Riwayat bulan ini tetap tersimpan. Total data aktif: ${merged.length} pegawai.`;
     okBox.style.display='block';
-
     document.getElementById('previewWrap').style.display='none';
     document.getElementById('fileInput').value='';
     document.getElementById('detectedBox').style.display='none';
     document.getElementById('validationBox').style.display='none';
     parsedPreview=null;
-
-    // Muat ulang data publik agar status PNS/P3K langsung tersedia.
-    await loadData();
-
+    await loadHistoryPeriods();
   }catch(e){
     console.error(e);
-    errBox.textContent = "Gagal menyimpan ke database. Periksa koneksi internet dan Firestore Rules.";
+    errBox.textContent='Gagal menyimpan riwayat TPP: '+(e.message||'Periksa koneksi internet dan Firestore Rules.');
     errBox.style.display='block';
   }
 }
-
-// Ekspos handler untuk atribut onclick pada HTML.
-window.prosesFile = prosesFile;
-window.batalPreview = batalPreview;
-window.publikasikan = publikasikan;
 
 loadData();
 
