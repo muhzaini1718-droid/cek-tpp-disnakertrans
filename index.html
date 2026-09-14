@@ -7,52 +7,91 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 
-<!-- Firebase (gratis, dari Google) -->
+<!-- Firebase 12.18.0 -->
 <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore-compat.js"></script>
-<!-- Named Firestore database: tppdisnaker -->
+
+<!-- Firestore named database: gunakan FirebaseApp MODULAR khusus agar database
+     "tppdisnaker" benar-benar menjadi target, bukan database "(default)". -->
 <script type="module">
-  import { getFirestore, collection, doc, getDoc, getDocs, query, orderBy, setDoc, writeBatch, serverTimestamp }
-    from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
+  import {
+    getFirestore, collection, doc, getDoc, getDocs, query, orderBy,
+    setDoc, writeBatch, serverTimestamp
+  } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+
+  const namedDbConfig = {
+    apiKey: "AIzaSyDb-RSBHTdNOH9k-Fa86AFiQ1777pBD_XA",
+    authDomain: "app-tpp-disnakertrans.firebaseapp.com",
+    projectId: "app-tpp-disnakertrans",
+    storageBucket: "app-tpp-disnakertrans.firebasestorage.app",
+    messagingSenderId: "107230672547",
+    appId: "1:107230672547:web:064b988639473f83e77116"
+  };
+
+  const modularApp = initializeApp(namedDbConfig, "tppNamedDbApp");
+  const nativeDb = getFirestore(modularApp, "tppdisnaker");
 
   class SnapAdapter {
-    constructor(s){ this._s=s; this.exists=s.exists(); this.id=s.id; }
+    constructor(s){
+      this._s=s;
+      this.exists=s.exists();
+      this.id=s.id;
+    }
     data(){ return this._s.data(); }
   }
+
   class DocAdapter {
     constructor(ref, db){ this.ref=ref; this.db=db; }
     async get(){ return new SnapAdapter(await getDoc(this.ref)); }
-    async set(data, options){ return setDoc(this.ref, data, options?.merge ? {merge:true} : undefined); }
-    collection(path){ return new ColAdapter(collection(this.ref, path), this.db); }
+    async set(data, options){
+      return setDoc(this.ref, data, options?.merge ? {merge:true} : undefined);
+    }
+    collection(path){
+      return new ColAdapter(collection(this.ref, path), this.db);
+    }
   }
+
   class QueryAdapter {
     constructor(q, db){ this.q=q; this.db=db; }
-    async get(){ const s=await getDocs(this.q); return {docs:s.docs.map(x=>new SnapAdapter(x))}; }
-    orderBy(field, direction){ return new QueryAdapter(query(this.q, orderBy(field, direction)), this.db); }
+    async get(){
+      const s=await getDocs(this.q);
+      return {docs:s.docs.map(x=>new SnapAdapter(x))};
+    }
+    orderBy(field, direction){
+      return new QueryAdapter(query(this.q, orderBy(field, direction)), this.db);
+    }
   }
+
   class ColAdapter {
     constructor(ref, db){ this.ref=ref; this.db=db; }
     doc(id){ return new DocAdapter(doc(this.ref,id), this.db); }
-    async get(){ const s=await getDocs(this.ref); return {docs:s.docs.map(x=>new SnapAdapter(x))}; }
-    orderBy(field, direction){ return new QueryAdapter(query(this.ref, orderBy(field,direction)), this.db); }
+    async get(){
+      const s=await getDocs(this.ref);
+      return {docs:s.docs.map(x=>new SnapAdapter(x))};
+    }
+    orderBy(field, direction){
+      return new QueryAdapter(query(this.ref, orderBy(field,direction)), this.db);
+    }
   }
+
   class BatchAdapter {
     constructor(db){ this.b=writeBatch(db); }
-    set(ref,data,options){ this.b.set(ref.ref,data,options?.merge ? {merge:true} : undefined); return this; }
+    set(ref,data,options){
+      this.b.set(ref.ref,data,options?.merge ? {merge:true} : undefined);
+      return this;
+    }
     delete(ref){ this.b.delete(ref.ref); return this; }
     commit(){ return this.b.commit(); }
   }
-  window.__namedFirestoreReady = (async()=>{
-    const app = firebase.app();
-    const nativeDb = getFirestore(app, "tppdisnaker");
-    window.__serverTimestamp = serverTimestamp;
-    return {
-      collection: path => new ColAdapter(collection(nativeDb,path), nativeDb),
-      batch: () => new BatchAdapter(nativeDb),
-      databaseId: "tppdisnaker"
-    };
-  })();
+
+  window.__namedFirestoreReady = Promise.resolve({
+    collection: path => new ColAdapter(collection(nativeDb,path), nativeDb),
+    batch: () => new BatchAdapter(nativeDb),
+    databaseId: "tppdisnaker",
+    appName: "tppNamedDbApp"
+  });
 </script>
 <!-- SheetJS, untuk membaca file Excel/CSV yang diupload admin -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -418,6 +457,9 @@ async function loadData(){
   showOnly('loadingBox');
   try{
     db = await window.__namedFirestoreReady;
+    if(!db || db.databaseId!=='tppdisnaker'){
+      throw new Error('Konfigurasi Firestore salah: database target bukan tppdisnaker.');
+    }
     await loadHistoryPeriods();
     if(availablePeriods.length){
       const latest=availablePeriods[0];
