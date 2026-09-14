@@ -8,9 +8,52 @@
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 
 <!-- Firebase (gratis, dari Google) -->
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore-compat.js"></script>
+<!-- Named Firestore database: tppdisnaker -->
+<script type="module">
+  import { getFirestore, collection, doc, getDoc, getDocs, query, orderBy, setDoc, writeBatch, serverTimestamp }
+    from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+
+  class SnapAdapter {
+    constructor(s){ this._s=s; this.exists=s.exists(); this.id=s.id; }
+    data(){ return this._s.data(); }
+  }
+  class DocAdapter {
+    constructor(ref, db){ this.ref=ref; this.db=db; }
+    async get(){ return new SnapAdapter(await getDoc(this.ref)); }
+    async set(data, options){ return setDoc(this.ref, data, options?.merge ? {merge:true} : undefined); }
+    collection(path){ return new ColAdapter(collection(this.ref, path), this.db); }
+  }
+  class QueryAdapter {
+    constructor(q, db){ this.q=q; this.db=db; }
+    async get(){ const s=await getDocs(this.q); return {docs:s.docs.map(x=>new SnapAdapter(x))}; }
+    orderBy(field, direction){ return new QueryAdapter(query(this.q, orderBy(field, direction)), this.db); }
+  }
+  class ColAdapter {
+    constructor(ref, db){ this.ref=ref; this.db=db; }
+    doc(id){ return new DocAdapter(doc(this.ref,id), this.db); }
+    async get(){ const s=await getDocs(this.ref); return {docs:s.docs.map(x=>new SnapAdapter(x))}; }
+    orderBy(field, direction){ return new QueryAdapter(query(this.ref, orderBy(field,direction)), this.db); }
+  }
+  class BatchAdapter {
+    constructor(db){ this.b=writeBatch(db); }
+    set(ref,data,options){ this.b.set(ref.ref,data,options?.merge ? {merge:true} : undefined); return this; }
+    delete(ref){ this.b.delete(ref.ref); return this; }
+    commit(){ return this.b.commit(); }
+  }
+  window.__namedFirestoreReady = (async()=>{
+    const app = firebase.app();
+    const nativeDb = getFirestore(app, "tppdisnaker");
+    window.__serverTimestamp = serverTimestamp;
+    return {
+      collection: path => new ColAdapter(collection(nativeDb,path), nativeDb),
+      batch: () => new BatchAdapter(nativeDb),
+      databaseId: "tppdisnaker"
+    };
+  })();
+</script>
 <!-- SheetJS, untuk membaca file Excel/CSV yang diupload admin -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- PDF.js, untuk membaca PDF TPP langsung di browser admin -->
@@ -289,7 +332,8 @@ const firebaseConfig = {
 
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
-const db = firebase.firestore();
+let db = null;
+
 
 let currentEmployees = [];
 let parsedPreview = null;
@@ -373,6 +417,7 @@ function populateMonths(){
 async function loadData(){
   showOnly('loadingBox');
   try{
+    db = await window.__namedFirestoreReady;
     await loadHistoryPeriods();
     if(availablePeriods.length){
       const latest=availablePeriods[0];
@@ -1024,7 +1069,7 @@ async function publikasikan(){
       const key=await historyAccessKey(e.nip,dateIso);
       ops.push({type:'set',ref:historyRef.collection('employees').doc(key),data:{...e,periode:parsedPreview.periode,periodKey}});
     }
-    ops.push({type:'set',ref:historyRef,data:{periodKey,periode:parsedPreview.periode,count:historyMerged.length,updatedAt:firebase.firestore.FieldValue.serverTimestamp()}});
+    ops.push({type:'set',ref:historyRef,data:{periodKey,periode:parsedPreview.periode,count:historyMerged.length,updatedAt:window.__serverTimestamp()}});
     for(let i=0;i<ops.length;i+=450){
       const batch=db.batch();
       for(const op of ops.slice(i,i+450)){ if(op.type==='delete') batch.delete(op.ref); else batch.set(op.ref,op.data,{merge:true}); }
@@ -1041,14 +1086,14 @@ async function publikasikan(){
       count:historyMerged.length,
       countPNS:pnsCount,
       countP3K:p3kCount,
-      updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+      updatedAt:window.__serverTimestamp()
     },{merge:true});
 
     await db.collection('tpp').doc('current').set({
       periode:parsedPreview.periode,
       periodKey,
       employees:merged,
-      updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+      updatedAt:window.__serverTimestamp()
     });
 
     okBox.textContent=`Berhasil dipublikasikan. ${parsedPreview.status} ${parsedPreview.employees.length} pegawai tersimpan pada ${parsedPreview.periode}. Riwayat bulan ini tetap tersimpan. Total data aktif: ${merged.length} pegawai.`;
