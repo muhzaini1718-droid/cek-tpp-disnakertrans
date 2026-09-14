@@ -200,9 +200,13 @@
     <div class="ok-msg" id="uploadOkMsg"></div>
 
     <div class="field">
-      <label for="periodeInput">Periode</label>
-      <input type="text" id="periodeInput" placeholder="Otomatis dari PDF, contoh: Agustus 2026">
-      <div class="hint">Jika PDF dibaca, periode akan diambil dari judul dokumen. Anda masih dapat mengoreksinya sebelum proses.</div>
+      <label>Periode TPP</label>
+      <div class="history-picker">
+        <select id="adminTahunInput" aria-label="Tahun TPP Admin"></select>
+        <select id="adminBulanInput" aria-label="Bulan TPP Admin"></select>
+      </div>
+      <div class="hint">Pilih tahun dan bulan sebelum mengunggah. Untuk PDF, sistem tetap membaca periode dari dokumen dan akan membandingkannya dengan pilihan Anda.</div>
+      <div id="adminPeriodStatus" class="detected-box" style="display:none;"></div>
     </div>
 
     <div class="field">
@@ -235,6 +239,11 @@
         <button class="secondary" onclick="batalPreview()">Batal</button>
         <button onclick="publikasikan()">Simpan &amp; Publikasikan</button>
       </div>
+    </div>
+
+    <div class="history-summary" id="adminHistorySummary">
+      <strong>Catatan Periode</strong>
+      <div class="hint">Pilih tahun dan bulan di atas. Setelah publikasi berhasil, periode tersebut akan tersimpan sebagai riwayat dan tidak tertimpa oleh bulan berikutnya.</div>
     </div>
 
     <div class="link-row" style="margin-top:20px;"><a onclick="doAdminLogout()">Keluar dari mode admin</a></div>
@@ -730,6 +739,59 @@ function showValidation(employees, pdfRows){
   box.style.display='block';
 }
 
+
+function initAdminPeriodPicker(){
+  const y=document.getElementById('adminTahunInput');
+  const m=document.getElementById('adminBulanInput');
+  if(!y || !m) return;
+  const now=new Date();
+  const currentYear=now.getFullYear();
+  const years=[];
+  for(let year=currentYear-5; year<=currentYear+2; year++) years.push(year);
+  y.innerHTML=years.map(v=>`<option value="${v}">${v}</option>`).join('');
+  y.value=String(currentYear);
+  m.innerHTML=MONTHS_ID.map((name,i)=>`<option value="${String(i+1).padStart(2,'0')}">${name}</option>`).join('');
+  m.value=String(now.getMonth()+1).padStart(2,'0');
+}
+
+function getAdminPeriodKey(){
+  const y=document.getElementById('adminTahunInput')?.value || '';
+  const m=document.getElementById('adminBulanInput')?.value || '';
+  return /^\d{4}$/.test(y) && /^\d{2}$/.test(m) ? `${y}-${m}` : '';
+}
+
+function getAdminPeriodLabel(){
+  const key=getAdminPeriodKey();
+  return periodLabel(key);
+}
+
+function setAdminPeriodFromDetected(periodText){
+  const key=periodKeyFromText(periodText);
+  if(!key) return;
+  const p=periodParts(key);
+  const y=document.getElementById('adminTahunInput');
+  const m=document.getElementById('adminBulanInput');
+  if(!y || !m) return;
+  if([...y.options].some(o=>o.value===p.year)) y.value=p.year;
+  m.value=p.month;
+}
+
+function validateAdminPdfPeriod(pdfPeriod){
+  const selected=getAdminPeriodKey();
+  const detected=periodKeyFromText(pdfPeriod);
+  if(!selected || !detected) return {
+    ok:false,
+    message:'Periode admin belum lengkap atau periode PDF tidak berhasil dibaca.'
+  };
+  if(selected!==detected){
+    return {
+      ok:false,
+      message:`Periode tidak sesuai. Pilihan Admin: ${periodLabel(selected)}. Periode pada PDF: ${periodLabel(detected)}. Data tidak diproses.`
+    };
+  }
+  return {ok:true};
+}
+
 async function prosesFile(){
   const errBox = document.getElementById('uploadErrMsg');
   const okBox = document.getElementById('uploadOkMsg');
@@ -741,9 +803,15 @@ async function prosesFile(){
   detectedBox.style.display='none';
   validationBox.style.display='none';
 
-  const periodeInput = document.getElementById('periodeInput');
   const statusInput = document.getElementById('statusInput');
   const fileEl = document.getElementById('fileInput');
+  const selectedPeriodKey = getAdminPeriodKey();
+  const selectedPeriod = getAdminPeriodLabel();
+  if(!selectedPeriodKey){
+    errBox.textContent='Pilih tahun dan bulan periode TPP terlebih dahulu.';
+    errBox.style.display='block';
+    return;
+  }
 
   if(!fileEl.files.length){
     errBox.textContent='Pilih file TPP terlebih dahulu.';
@@ -768,12 +836,21 @@ async function prosesFile(){
         return;
       }
 
-      const periode = periodeInput.value.trim() || result.periode;
-      if(!periode){
-        errBox.textContent='Periode tidak berhasil dideteksi dari PDF. Isi periode secara manual.';
+      const periodCheck = validateAdminPdfPeriod(result.periode);
+      if(!periodCheck.ok){
+        errBox.textContent=periodCheck.message;
         errBox.style.display='block';
+        const s=document.getElementById('adminPeriodStatus');
+        s.className='validation-box bad';
+        s.textContent=periodCheck.message;
+        s.style.display='block';
         return;
       }
+      const periode = selectedPeriod;
+      const s=document.getElementById('adminPeriodStatus');
+      s.className='validation-box ok';
+      s.textContent=`Periode cocok: ${periode}`;
+      s.style.display='block';
 
       const employees = result.employees.map(e=>({
         nama:e.nama,
@@ -790,7 +867,7 @@ async function prosesFile(){
         statusKepegawaian:status
       }));
 
-      showDetection(status, periode, employees, `File: ${file.name} · ${result.pages} halaman`);
+      showDetection(status, periode, employees, `File: ${file.name} · ${result.pages} halaman · Periode cocok`);
       showValidation(employees, result.employees);
 
       const issues = validateEmployees(employees);
@@ -815,10 +892,7 @@ async function prosesFile(){
       throw new Error('Untuk Excel/CSV, pilih Jenis Pegawai PNS atau P3K terlebih dahulu.');
     }
 
-    const periode = periodeInput.value.trim();
-    if(!periode){
-      throw new Error('Isi periode terlebih dahulu untuk Excel/CSV.');
-    }
+    const periode = selectedPeriod;
 
     result = await parseSpreadsheet(file,statusInput.value);
     const employees = result.employees;
@@ -866,6 +940,8 @@ function batalPreview(){
   document.getElementById('previewWrap').style.display='none';
   document.getElementById('detectedBox').style.display='none';
   document.getElementById('validationBox').style.display='none';
+  const s=document.getElementById('adminPeriodStatus');
+  if(s) s.style.display='none';
 }
 
 async function publikasikan(){
