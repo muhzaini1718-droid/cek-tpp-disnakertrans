@@ -159,6 +159,12 @@
   <div class="card" id="noDataCard" style="display:none;">
     <h2>Data belum tersedia</h2>
     <p class="desc">Admin belum mengunggah data TPP untuk periode ini. Silakan hubungi bagian kepegawaian.</p>
+    <div class="empty-actions" style="margin-top:24px;display:flex;flex-direction:column;gap:10px;">
+      <button type="button" onclick="showOnly('loginCard'); loadSavedNip();"
+              style="width:100%;padding:13px 16px;border:0;border-radius:4px;background:#14243d;color:#fff;font-weight:700;font-size:16px;cursor:pointer;">
+        🔐 Login sebagai Pegawai
+      </button>
+    </div>
     <div class="link-row"><a onclick="showAdminLogin()">Login sebagai Admin</a></div>
   </div>
 
