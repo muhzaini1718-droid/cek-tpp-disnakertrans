@@ -390,9 +390,8 @@ async function loadData(){
         statusKepegawaian: e.statusKepegawaian || "PNS"
       }));
 
-      document.getElementById('periodeNote').textContent =
-        "Data periode " + (data.periode || "-") +
-        ". Pilih periode lain bila ingin melihat riwayat TPP.";
+      // Keterangan periode mengikuti pilihan tahun/bulan pegawai.
+      updateEmployeePeriodNote();
 
       document.getElementById('slipPeriode').textContent =
         "Rincian TPP — " + (data.periode || "-");
@@ -418,21 +417,39 @@ function populateEmployeePeriods(periods){
     ? years.map(v=>`<option value="${v}">${v}</option>`).join('')
     : `<option value="${new Date().getFullYear()}">${new Date().getFullYear()}</option>`;
 
+  function updateEmployeePeriodNote(){
+    const selectedYear = Number(y.value);
+    const selectedMonth = Number(m.value);
+    const note = document.getElementById('periodeNote');
+
+    if(note && selectedYear && selectedMonth){
+      note.textContent =
+        "Data periode " + periodLabel(selectedYear, selectedMonth) +
+        ". Pilih periode lain bila ingin melihat riwayat TPP.";
+    }
+  }
+
   function renderMonths(){
     const selectedYear = Number(y.value);
     const allowed = periods.filter(p=>p.year===selectedYear);
     m.innerHTML = allowed.length
       ? allowed.map(p=>`<option value="${p.month}">${MONTHS_ID[p.month-1]}</option>`).join('')
       : MONTHS_ID.map((name,i)=>`<option value="${i+1}">${name}</option>`).join('');
+
+    updateEmployeePeriodNote();
   }
 
   y.onchange = renderMonths;
+  m.onchange = updateEmployeePeriodNote;
   renderMonths();
 
   if(periods.length){
     y.value = String(periods[0].year);
     renderMonths();
     m.value = String(periods[0].month);
+    updateEmployeePeriodNote();
+  } else {
+    updateEmployeePeriodNote();
   }
 }
 
