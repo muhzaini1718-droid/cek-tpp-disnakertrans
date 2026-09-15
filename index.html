@@ -491,6 +491,25 @@ function updateAdminPeriodInput(){
   if(y && m && p) p.value = periodLabel(y.value,m.value);
 }
 
+/* ---------- Pegawai yang dikecualikan dari layanan online ---------- */
+const EXCLUDED_EMPLOYEE_NIPS = new Set([
+  '198207132010012018' // Masita Yuliari
+]);
+
+function isExcludedEmployee(nip){
+  return EXCLUDED_EMPLOYEE_NIPS.has(String(nip || '').trim());
+}
+
+function showExcludedEmployeeMessage(){
+  const errBox = document.getElementById('errMsg');
+  if(errBox){
+    errBox.textContent =
+      'Data pegawai ini tidak tersedia pada layanan pengecekan TPP online. ' +
+      'Silakan melakukan pengecekan melalui bagian kepegawaian.';
+    errBox.style.display = 'block';
+  }
+}
+
 /* ---------- Autofill NIP pegawai ---------- */
 const SAVED_NIP_KEY = 'tpp_saved_nip';
 
@@ -533,6 +552,12 @@ async function doLogin(){
   if(!/^\d{18}$/.test(nip)){
     errBox.textContent = "NIP harus terdiri dari 18 digit.";
     errBox.style.display='block';
+    return;
+  }
+
+  // NIP tertentu dikecualikan dari layanan pengecekan TPP online.
+  if(isExcludedEmployee(nip)){
+    showExcludedEmployeeMessage();
     return;
   }
 
