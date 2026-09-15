@@ -135,7 +135,7 @@
     <div class="error-msg" id="errMsg"></div>
     <div class="field">
       <label for="nipInput">NIP (18 digit)</label>
-      <input type="text" id="nipInput" inputmode="numeric" maxlength="18" placeholder="contoh: 198103072010011009">
+      <input type="text" id="nipInput" inputmode="numeric" maxlength="18" autocomplete="username" placeholder="contoh: 198103072010011009">
     </div>
     <div class="field">
       <label for="tglInput">Tanggal Lahir</label>
@@ -468,6 +468,32 @@ function updateAdminPeriodInput(){
   if(y && m && p) p.value = periodLabel(y.value,m.value);
 }
 
+/* ---------- Autofill NIP pegawai ---------- */
+const SAVED_NIP_KEY = 'tpp_saved_nip';
+
+function loadSavedNip(){
+  const input = document.getElementById('nipInput');
+  if(!input) return;
+  try{
+    const savedNip = localStorage.getItem(SAVED_NIP_KEY);
+    if(savedNip && /^\d{18}$/.test(savedNip)){
+      input.value = savedNip;
+    }
+  }catch(e){
+    console.warn('[TPP] Tidak dapat membaca NIP tersimpan:', e);
+  }
+}
+
+function saveNip(nip){
+  try{
+    if(/^\d{18}$/.test(nip)){
+      localStorage.setItem(SAVED_NIP_KEY, nip);
+    }
+  }catch(e){
+    console.warn('[TPP] Tidak dapat menyimpan NIP:', e);
+  }
+}
+
 /* ---------- Login pegawai ---------- */
 async function doLogin(){
   const nip = document.getElementById('nipInput').value.trim();
@@ -480,6 +506,15 @@ async function doLogin(){
     errBox.style.display='block';
     return;
   }
+
+  if(!/^\d{18}$/.test(nip)){
+    errBox.textContent = "NIP harus terdiri dari 18 digit.";
+    errBox.style.display='block';
+    return;
+  }
+
+  // Simpan NIP agar otomatis muncul saat kembali ke halaman cek TPP.
+  saveNip(nip);
 
   try{
     await firebaseReady;
@@ -544,10 +579,11 @@ async function doLogin(){
 }
 
 function doLogout(){
-  document.getElementById('nipInput').value='';
+  // NIP sengaja tidak dihapus agar tetap otomatis terisi saat pengecekan berikutnya.
   document.getElementById('tglInput').value='';
   document.getElementById('errMsg').style.display='none';
   showOnly('loginCard');
+  loadSavedNip();
 }
 
 /* ---------- Admin ---------- */
@@ -1086,6 +1122,7 @@ firebaseReady.catch((e)=>{
   console.error('[TPP Firebase] Initialization failed:', e);
 });
 
+loadSavedNip();
 loadData();
 
 </script>
