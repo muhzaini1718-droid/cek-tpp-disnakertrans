@@ -90,6 +90,20 @@
   .detected-box strong{color:var(--navy);}
   .status-pill{display:inline-block;padding:3px 8px;border-radius:10px;font-size:11px;font-weight:600;margin-left:6px;background:#e9f3ee;color:var(--green);}
   .status-select{width:100%;padding:11px 12px;border:1px solid #c7c1ae;border-radius:2px;font-size:14px;background:var(--paper-2);color:var(--ink);}
+  .admin-section{margin-top:28px;padding-top:24px;border-top:1px solid var(--line);}
+  .admin-section h3{font-family:'Source Serif 4',serif;font-size:16px;color:var(--navy);margin:0 0 6px;}
+  .admin-section .section-desc{font-size:12.5px;color:var(--slate);line-height:1.5;margin:0 0 16px;}
+  .exclude-form{display:grid;grid-template-columns:1fr;gap:10px;}
+  .exclude-actions{display:flex;gap:10px;}
+  .exclude-actions button{flex:1;}
+  .exclude-list{margin-top:16px;border:1px solid var(--line);max-height:260px;overflow:auto;}
+  .exclude-item{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line);background:#fff;}
+  .exclude-item:last-child{border-bottom:none;}
+  .exclude-name{font-size:13px;font-weight:600;color:var(--navy);}
+  .exclude-nip{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--slate);margin-top:2px;}
+  .exclude-empty{padding:14px 12px;font-size:12.5px;color:var(--slate);}
+  button.mini-btn{width:auto;padding:7px 10px;font-size:11.5px;background:#fff;color:var(--red);border:1px solid #e3b6a8;}
+  button.mini-btn:hover{background:#fbeae6;}
   .validation-box{margin:14px 0;padding:12px 14px;border:1px solid var(--line);font-size:12.5px;line-height:1.55;}
   .validation-box.ok{background:#e9f3ee;border-color:#a9d1bb;color:var(--green);}
   .validation-box.warn{background:#fff5df;border-color:#e2c37b;color:#76580a;}
@@ -258,6 +272,29 @@
       </div>
     </div>
 
+    <div class="admin-section">
+      <h3>Pegawai yang Dikecualikan</h3>
+      <p class="section-desc">Pegawai dalam daftar ini tetap tersimpan di data TPP, tetapi tidak dapat membuka rincian TPP pada aplikasi. Pengaturan berlaku untuk seluruh periode.</p>
+      <div class="error-msg" id="excludeErrMsg"></div>
+      <div class="ok-msg" id="excludeOkMsg"></div>
+      <div class="exclude-form">
+        <div class="field" style="margin-bottom:0;">
+          <label for="excludeNipInput">NIP Pegawai</label>
+          <input type="text" id="excludeNipInput" inputmode="numeric" maxlength="18" list="employeeNipOptions" placeholder="18 digit NIP" oninput="fillExcludedNameFromNip()">
+          <datalist id="employeeNipOptions"></datalist>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label for="excludeNameInput">Nama Pegawai</label>
+          <input type="text" id="excludeNameInput" placeholder="Nama akan terisi otomatis jika ditemukan">
+        </div>
+        <div class="exclude-actions">
+          <button type="button" onclick="addExcludedEmployee()">Tambahkan ke Daftar Pengecualian</button>
+        </div>
+      </div>
+      <div class="exclude-list" id="excludedEmployeeList"></div>
+      <div class="hint">Menghapus pegawai dari daftar akan mengaktifkan kembali akses pengecekan TPP pegawai tersebut.</div>
+    </div>
+
     <div class="link-row" style="margin-top:20px;"><a onclick="doAdminLogout()">Keluar dari mode admin</a></div>
   </div>
 
@@ -283,6 +320,7 @@ let firebaseReady = null;
 let serverTimestamp = null;
 let currentEmployees = [];
 let parsedPreview = null;
+let excludedEmployees = [];
 
 const MONTHS_ID = [
   "Januari","Februari","Maret","April","Mei","Juni",
@@ -328,7 +366,7 @@ firebaseReady = (async () => {
           const ref = doc(namedDb, collectionName, documentId);
           return {
             get: () => getDoc(ref),
-            set: (data) => setDoc(ref, data)
+            set: (data, options) => setDoc(ref, data, options)
           };
         },
         get(){
@@ -389,15 +427,19 @@ async function loadData(){
 
     const currentData = currentDoc.exists() ? (currentDoc.data() || {}) : {};
 
-    if(currentData.employees && currentData.employees.length){
-      const data = currentData;
-      currentEmployees = (data.employees || []).map(e => ({
-        ...e,
-        statusKepegawaian: e.statusKepegawaian || "PNS"
-      }));
+    excludedEmployees = Array.isArray(currentData.excludedEmployees)
+      ? normalizeExcludedEmployees(currentData.excludedEmployees)
+      : normalizeExcludedEmployees(LEGACY_EXCLUDED_EMPLOYEES);
 
-      // Keterangan periode mengikuti pilihan tahun/bulan pegawai.
-      updateEmployeePeriodNote();
+    currentEmployees = (currentData.employees || []).map(e => ({
+      ...e,
+      statusKepegawaian: e.statusKepegawaian || "PNS"
+    }));
+
+    if(currentEmployees.length){
+      const data = currentData;
+
+      // Keterangan periode sudah diperbarui oleh populateEmployeePeriods().
 
       document.getElementById('slipPeriode').textContent =
         "Rincian TPP — " + (data.periode || "-");
@@ -492,12 +534,28 @@ function updateAdminPeriodInput(){
 }
 
 /* ---------- Pegawai yang dikecualikan dari layanan online ---------- */
-const EXCLUDED_EMPLOYEE_NIPS = new Set([
-  '198207132010012018' // Masita Yuliari
-]);
+// Data lama dipakai hanya sebagai migrasi pertama apabila dokumen current
+// belum pernah memiliki field excludedEmployees. Setelah admin menyimpan
+// pengaturan, Firestore menjadi sumber utama daftar pengecualian.
+const LEGACY_EXCLUDED_EMPLOYEES = [
+  { nip:'198207132010012018', nama:'Masita Yuliari' }
+];
+
+function normalizeExcludedEmployees(list){
+  if(!Array.isArray(list)) return [];
+  const byNip = new Map();
+  list.forEach(item => {
+    const nip = normalizeNip(typeof item === 'string' ? item : item?.nip);
+    if(!/^\d{18}$/.test(nip)) return;
+    const nama = String(typeof item === 'string' ? '' : (item?.nama || '')).trim();
+    byNip.set(nip, {nip, nama});
+  });
+  return Array.from(byNip.values()).sort((a,b)=>(a.nama||a.nip).localeCompare(b.nama||b.nip,'id'));
+}
 
 function isExcludedEmployee(nip){
-  return EXCLUDED_EMPLOYEE_NIPS.has(String(nip || '').trim());
+  const normalized = normalizeNip(nip);
+  return excludedEmployees.some(x => x.nip === normalized);
 }
 
 function showExcludedEmployeeMessage(){
@@ -507,6 +565,117 @@ function showExcludedEmployeeMessage(){
       'Data pegawai ini tidak tersedia pada layanan pengecekan TPP online. ' +
       'Silakan melakukan pengecekan melalui bagian kepegawaian.';
     errBox.style.display = 'block';
+  }
+}
+
+function populateEmployeeNipOptions(){
+  const list = document.getElementById('employeeNipOptions');
+  if(!list) return;
+  list.innerHTML = currentEmployees
+    .filter(e => /^\d{18}$/.test(normalizeNip(e.nip)))
+    .sort((a,b)=>String(a.nama||'').localeCompare(String(b.nama||''),'id'))
+    .map(e => `<option value="${escapeHtml(normalizeNip(e.nip))}">${escapeHtml(e.nama || '')}</option>`)
+    .join('');
+}
+
+function fillExcludedNameFromNip(){
+  const nipEl = document.getElementById('excludeNipInput');
+  const nameEl = document.getElementById('excludeNameInput');
+  if(!nipEl || !nameEl) return;
+  const nip = normalizeNip(nipEl.value);
+  const found = currentEmployees.find(e => normalizeNip(e.nip) === nip);
+  if(found && !nameEl.value.trim()) nameEl.value = found.nama || '';
+}
+
+function renderExcludedEmployees(){
+  const box = document.getElementById('excludedEmployeeList');
+  if(!box) return;
+  populateEmployeeNipOptions();
+
+  if(!excludedEmployees.length){
+    box.innerHTML = '<div class="exclude-empty">Belum ada pegawai yang dikecualikan.</div>';
+    return;
+  }
+
+  box.innerHTML = excludedEmployees.map(item => `
+    <div class="exclude-item">
+      <div>
+        <div class="exclude-name">${escapeHtml(item.nama || 'Nama belum dicantumkan')}</div>
+        <div class="exclude-nip">${escapeHtml(item.nip)}</div>
+      </div>
+      <button type="button" class="mini-btn" onclick="removeExcludedEmployee('${item.nip}')">Hapus</button>
+    </div>
+  `).join('');
+}
+
+async function saveExcludedEmployees(){
+  await firebaseReady;
+  excludedEmployees = normalizeExcludedEmployees(excludedEmployees);
+  await db.collection('tpp').doc('current').set({
+    excludedEmployees,
+    exclusionsUpdatedAt: serverTimestamp()
+  }, {merge:true});
+}
+
+async function addExcludedEmployee(){
+  const err = document.getElementById('excludeErrMsg');
+  const ok = document.getElementById('excludeOkMsg');
+  const nipEl = document.getElementById('excludeNipInput');
+  const nameEl = document.getElementById('excludeNameInput');
+  if(err) err.style.display='none';
+  if(ok) ok.style.display='none';
+
+  const nip = normalizeNip(nipEl?.value);
+  let nama = String(nameEl?.value || '').trim();
+  if(!/^\d{18}$/.test(nip)){
+    if(err){ err.textContent='NIP harus terdiri dari 18 digit.'; err.style.display='block'; }
+    return;
+  }
+
+  const found = currentEmployees.find(e => normalizeNip(e.nip) === nip);
+  if(!nama && found) nama = found.nama || '';
+  if(excludedEmployees.some(x => x.nip === nip)){
+    if(err){ err.textContent='Pegawai dengan NIP tersebut sudah ada dalam daftar pengecualian.'; err.style.display='block'; }
+    return;
+  }
+
+  const previous = excludedEmployees.slice();
+  excludedEmployees.push({nip,nama});
+  renderExcludedEmployees();
+
+  try{
+    await saveExcludedEmployees();
+    if(nipEl) nipEl.value='';
+    if(nameEl) nameEl.value='';
+    if(ok){ ok.textContent=`${nama || nip} berhasil dikecualikan dari layanan TPP online.`; ok.style.display='block'; }
+  }catch(e){
+    console.error('[TPP] save exclusions:', e);
+    excludedEmployees = previous;
+    renderExcludedEmployees();
+    if(err){ err.textContent='Gagal menyimpan daftar pengecualian ke Firebase. Periksa hak akses Firestore.'; err.style.display='block'; }
+  }
+}
+
+async function removeExcludedEmployee(nip){
+  const err = document.getElementById('excludeErrMsg');
+  const ok = document.getElementById('excludeOkMsg');
+  if(err) err.style.display='none';
+  if(ok) ok.style.display='none';
+
+  const normalized = normalizeNip(nip);
+  const previous = excludedEmployees.slice();
+  const removed = excludedEmployees.find(x=>x.nip===normalized);
+  excludedEmployees = excludedEmployees.filter(x=>x.nip!==normalized);
+  renderExcludedEmployees();
+
+  try{
+    await saveExcludedEmployees();
+    if(ok){ ok.textContent=`${removed?.nama || normalized} sudah diaktifkan kembali.`; ok.style.display='block'; }
+  }catch(e){
+    console.error('[TPP] remove exclusion:', e);
+    excludedEmployees = previous;
+    renderExcludedEmployees();
+    if(err){ err.textContent='Gagal memperbarui daftar pengecualian di Firebase.'; err.style.display='block'; }
   }
 }
 
@@ -638,14 +807,21 @@ function doLogout(){
 function showAdminLogin(){ showOnly('adminLoginCard'); }
 function showEmployeeLogin(){ showOnly('loginCard'); }
 
-function doAdminLogin(){
+async function doAdminLogin(){
   const email = document.getElementById('adminEmail').value.trim();
   const pass = document.getElementById('adminPass').value;
   const err = document.getElementById('adminErrMsg');
   err.style.display='none';
-  auth.signInWithEmailAndPassword(email, pass)
-    .then(()=>{ populateAdminPeriods(); showOnly('adminPanel'); })
-    .catch((e)=>{ err.textContent = "Login gagal: email atau kata sandi salah."; err.style.display='block'; });
+  try{
+    await firebaseReady;
+    await auth.signInWithEmailAndPassword(email, pass);
+    populateAdminPeriods();
+    renderExcludedEmployees();
+    showOnly('adminPanel');
+  }catch(e){
+    err.textContent = "Login gagal: email atau kata sandi salah.";
+    err.style.display='block';
+  }
 }
 
 function doAdminLogout(){
@@ -1139,9 +1315,11 @@ async function publikasikan(){
       await currentRef.set({
         periode,
         employees: mergedHistory,
+        excludedEmployees: normalizeExcludedEmployees(excludedEmployees),
         year,
         month,
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        exclusionsUpdatedAt: serverTimestamp()
       });
     }
 
