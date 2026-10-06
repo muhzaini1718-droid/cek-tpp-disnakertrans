@@ -279,9 +279,15 @@
       <div class="ok-msg" id="excludeOkMsg"></div>
       <div class="exclude-form">
         <div class="field" style="margin-bottom:0;">
+          <label for="excludeEmployeeSelect">Pilih Pegawai</label>
+          <select id="excludeEmployeeSelect" onchange="selectExcludedEmployee()">
+            <option value="">— Pilih nama pegawai —</option>
+          </select>
+          <div class="hint">Daftar diambil dari seluruh riwayat TPP yang tersimpan, bukan hanya periode terbaru.</div>
+        </div>
+        <div class="field" style="margin-bottom:0;">
           <label for="excludeNipInput">NIP Pegawai</label>
-          <input type="text" id="excludeNipInput" inputmode="numeric" maxlength="18" list="employeeNipOptions" placeholder="18 digit NIP" oninput="fillExcludedNameFromNip()">
-          <datalist id="employeeNipOptions"></datalist>
+          <input type="text" id="excludeNipInput" inputmode="numeric" maxlength="18" placeholder="18 digit NIP" oninput="fillExcludedNameFromNip()">
         </div>
         <div class="field" style="margin-bottom:0;">
           <label for="excludeNameInput">Nama Pegawai</label>
@@ -319,6 +325,7 @@ let db = null;
 let firebaseReady = null;
 let serverTimestamp = null;
 let currentEmployees = [];
+let knownEmployees = [];
 let parsedPreview = null;
 let excludedEmployees = [];
 
@@ -406,6 +413,7 @@ async function loadData(){
 
     const historySnap = await db.collection('tpp_periods').get();
     const periods = [];
+    const knownByNip = new Map();
 
     historySnap.forEach(d => {
       const x = d.data() || {};
@@ -417,6 +425,21 @@ async function loadData(){
           label:x.periode || periodLabel(x.year,x.month)
         });
       }
+
+      // Bangun direktori pegawai dari SELURUH riwayat periode, bukan hanya data current.
+      // Dengan begitu admin tetap bisa memilih pegawai yang tidak ada pada periode terbaru.
+      (x.employees || []).forEach(e => {
+        const nip = normalizeNip(e.nip);
+        if(!/^\d{18}$/.test(nip)) return;
+        const prev = knownByNip.get(nip) || {};
+        knownByNip.set(nip, {
+          ...prev,
+          ...e,
+          nip,
+          nama: String(e.nama || prev.nama || '').trim(),
+          statusKepegawaian: e.statusKepegawaian || prev.statusKepegawaian || 'PNS'
+        });
+      });
     });
 
     periods.sort((a,b) => b.year-a.year || b.month-a.month);
@@ -435,6 +458,23 @@ async function loadData(){
       ...e,
       statusKepegawaian: e.statusKepegawaian || "PNS"
     }));
+
+    // Pastikan data current juga masuk ke direktori pegawai.
+    currentEmployees.forEach(e => {
+      const nip = normalizeNip(e.nip);
+      if(!/^\d{18}$/.test(nip)) return;
+      const prev = knownByNip.get(nip) || {};
+      knownByNip.set(nip, {
+        ...prev,
+        ...e,
+        nip,
+        nama: String(e.nama || prev.nama || '').trim(),
+        statusKepegawaian: e.statusKepegawaian || prev.statusKepegawaian || 'PNS'
+      });
+    });
+
+    knownEmployees = Array.from(knownByNip.values())
+      .sort((a,b)=>String(a.nama||'').localeCompare(String(b.nama||''),'id'));
 
     if(currentEmployees.length){
       const data = currentData;
@@ -568,29 +608,49 @@ function showExcludedEmployeeMessage(){
   }
 }
 
-function populateEmployeeNipOptions(){
-  const list = document.getElementById('employeeNipOptions');
-  if(!list) return;
-  list.innerHTML = currentEmployees
+function populateEmployeeSelect(){
+  const select = document.getElementById('excludeEmployeeSelect');
+  if(!select) return;
+  const currentValue = select.value;
+  const options = knownEmployees
     .filter(e => /^\d{18}$/.test(normalizeNip(e.nip)))
-    .sort((a,b)=>String(a.nama||'').localeCompare(String(b.nama||''),'id'))
-    .map(e => `<option value="${escapeHtml(normalizeNip(e.nip))}">${escapeHtml(e.nama || '')}</option>`)
+    .map(e => `<option value="${escapeHtml(normalizeNip(e.nip))}">${escapeHtml(e.nama || 'Nama tidak tersedia')} — ${escapeHtml(normalizeNip(e.nip))}</option>`)
     .join('');
+  select.innerHTML = '<option value="">— Pilih nama pegawai —</option>' + options;
+  if(currentValue && knownEmployees.some(e=>normalizeNip(e.nip)===currentValue)) select.value = currentValue;
+}
+
+function selectExcludedEmployee(){
+  const select = document.getElementById('excludeEmployeeSelect');
+  const nipEl = document.getElementById('excludeNipInput');
+  const nameEl = document.getElementById('excludeNameInput');
+  if(!select || !nipEl || !nameEl) return;
+  const nip = normalizeNip(select.value);
+  if(!nip) return;
+  const found = knownEmployees.find(e => normalizeNip(e.nip) === nip);
+  nipEl.value = nip;
+  nameEl.value = found?.nama || '';
 }
 
 function fillExcludedNameFromNip(){
   const nipEl = document.getElementById('excludeNipInput');
   const nameEl = document.getElementById('excludeNameInput');
+  const select = document.getElementById('excludeEmployeeSelect');
   if(!nipEl || !nameEl) return;
   const nip = normalizeNip(nipEl.value);
-  const found = currentEmployees.find(e => normalizeNip(e.nip) === nip);
-  if(found && !nameEl.value.trim()) nameEl.value = found.nama || '';
+  const found = knownEmployees.find(e => normalizeNip(e.nip) === nip);
+  if(found){
+    nameEl.value = found.nama || '';
+    if(select) select.value = nip;
+  }else if(select){
+    select.value = '';
+  }
 }
 
 function renderExcludedEmployees(){
   const box = document.getElementById('excludedEmployeeList');
   if(!box) return;
-  populateEmployeeNipOptions();
+  populateEmployeeSelect();
 
   if(!excludedEmployees.length){
     box.innerHTML = '<div class="exclude-empty">Belum ada pegawai yang dikecualikan.</div>';
@@ -632,7 +692,7 @@ async function addExcludedEmployee(){
     return;
   }
 
-  const found = currentEmployees.find(e => normalizeNip(e.nip) === nip);
+  const found = knownEmployees.find(e => normalizeNip(e.nip) === nip);
   if(!nama && found) nama = found.nama || '';
   if(excludedEmployees.some(x => x.nip === nip)){
     if(err){ err.textContent='Pegawai dengan NIP tersebut sudah ada dalam daftar pengecualian.'; err.style.display='block'; }
@@ -647,6 +707,8 @@ async function addExcludedEmployee(){
     await saveExcludedEmployees();
     if(nipEl) nipEl.value='';
     if(nameEl) nameEl.value='';
+    const selectEl = document.getElementById('excludeEmployeeSelect');
+    if(selectEl) selectEl.value='';
     if(ok){ ok.textContent=`${nama || nip} berhasil dikecualikan dari layanan TPP online.`; ok.style.display='block'; }
   }catch(e){
     console.error('[TPP] save exclusions:', e);
